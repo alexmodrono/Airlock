@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build Package
+        run: swift build
+
+      - name: Test Package
+        run: swift test
+
+      - name: Build Demo App
+        run: xcodebuild -project AirlockDemo/AirlockDemo.xcodeproj -scheme AirlockDemo -configuration Debug -destination 'platform=macOS' build
