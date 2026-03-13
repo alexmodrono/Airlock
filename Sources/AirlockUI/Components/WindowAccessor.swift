@@ -68,12 +68,13 @@ public struct WindowAccessor: NSViewRepresentable {
             configurationCount += 1
             let isFirstConfiguration = configurationCount == 1
 
-            // Make window borderless and transparent
+            // Make window visually borderless but keep .titled so canBecomeKey
+            // returns true — required for TextFields to accept focus.
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
-            window.styleMask = [.borderless, .fullSizeContentView]
+            window.styleMask = [.titled, .fullSizeContentView]
 
             // Remove standard window controls
             window.standardWindowButton(.closeButton)?.isHidden = true
