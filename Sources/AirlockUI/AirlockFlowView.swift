@@ -86,6 +86,7 @@ public struct AirlockConfiguration {
 /// ```
 public struct AirlockFlowView: View {
     @ObservedObject var navigator: AirlockNavigator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var overlayOpacity: Double = 0
@@ -95,6 +96,10 @@ public struct AirlockFlowView: View {
     @State private var showSkipHint: Bool = false
     @State private var keyMonitor: Any?
     @State private var startupSound: NSSound?
+    @State private var dismissTask: Task<Void, Never>?
+    @State private var focusTask: Task<Void, Never>?
+    @State private var skipHintTask: Task<Void, Never>?
+    @State private var soundFadeTask: Task<Void, Never>?
     @FocusState private var isFocused: Bool
     @StateObject private var animationController = HelloAnimationController()
 
@@ -155,37 +160,17 @@ public struct AirlockFlowView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.4))
                         .padding(.bottom, 20)
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .transition(skipHintTransition)
                 }
             }
-            .animation(.easeInOut(duration: 0.3), value: showSkipHint)
-            .animation(.easeInOut(duration: 0.2), value: introComplete)
+            .animation(skipHintAnimation, value: showSkipHint)
+            .animation(introStateAnimation, value: introComplete)
         }
         .focusable()
         .focused($isFocused)
         .background(WindowAccessor())
         .onAppear {
-            startAnimations()
-            if configuration.playIntroSound {
-                playStartupSound()
-            }
-            if configuration.allowSkipIntro {
-                setupKeyMonitor()
-            }
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                isFocused = true
-            }
-
-            if !configuration.showIntro {
-                introComplete = true
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    if !introComplete {
-                        showSkipHint = true
-                    }
-                }
-            }
+            handleAppear()
         }
         .onChange(of: introComplete) { _, complete in
             if complete {
@@ -194,8 +179,7 @@ public struct AirlockFlowView: View {
             }
         }
         .onDisappear {
-            startupSound?.stop()
-            removeKeyMonitor()
+            handleDisappear()
         }
         .onKeyPress(.escape) {
             if !introComplete && configuration.showIntro && configuration.allowSkipIntro {
@@ -212,7 +196,7 @@ public struct AirlockFlowView: View {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 53 { // Escape
                 if !introComplete && configuration.showIntro {
-                    DispatchQueue.main.async {
+                    Task { @MainActor in
                         skipIntroAnimation()
                     }
                     return nil
@@ -230,12 +214,16 @@ public struct AirlockFlowView: View {
     }
 
     private func dismissWithAnimation() {
-        withAnimation(.easeOut(duration: 0.25)) {
+        dismissTask?.cancel()
+        withAnimation(dismissAnimation) {
             overlayOpacity = 0
             cardOpacity = 0
             cardScale = 0.95
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+        dismissTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: dismissalDelayNanoseconds)
+            guard !Task.isCancelled else { return }
+
             // If onDismiss is provided, call it instead of completing normally
             if let onDismiss = configuration.onDismiss {
                 onDismiss()
@@ -246,10 +234,10 @@ public struct AirlockFlowView: View {
     }
 
     private func startAnimations() {
-        withAnimation(.easeOut(duration: 0.4)) {
+        withAnimation(overlayAnimation) {
             overlayOpacity = 1
         }
-        withAnimation(.spring(response: 0.5, dampingFraction: 0.8).delay(0.1)) {
+        withAnimation(cardAnimation) {
             cardScale = 1.0
             cardOpacity = 1
         }
@@ -271,26 +259,113 @@ public struct AirlockFlowView: View {
 
     private func skipIntroAnimation() {
         showSkipHint = false
+        skipHintTask?.cancel()
         fadeOutSound()
         animationController.skip()
     }
 
     private func fadeOutSound() {
         guard let sound = startupSound, sound.isPlaying else { return }
+        soundFadeTask?.cancel()
+        let originalVolume = sound.volume
 
-        let fadeSteps = 10
-        let fadeDuration = 0.3
-        let stepDuration = fadeDuration / Double(fadeSteps)
-        let volumeStep = sound.volume / Float(fadeSteps)
+        soundFadeTask = Task { @MainActor in
+            let fadeSteps = 10
 
-        for step in 0..<fadeSteps {
-            DispatchQueue.main.asyncAfter(deadline: .now() + stepDuration * Double(step)) {
-                sound.volume = max(0, sound.volume - volumeStep)
-                if step == fadeSteps - 1 {
-                    sound.stop()
-                }
+            for step in 1...fadeSteps {
+                try? await Task.sleep(nanoseconds: 30_000_000)
+                guard !Task.isCancelled else { return }
+
+                let remaining = Float(fadeSteps - step) / Float(fadeSteps)
+                sound.volume = max(0, originalVolume * remaining)
             }
+
+            sound.stop()
+            startupSound = nil
         }
+    }
+
+    private func handleAppear() {
+        startAnimations()
+        scheduleFocus()
+
+        guard configuration.showIntro else {
+            introComplete = true
+            return
+        }
+
+        if configuration.playIntroSound {
+            playStartupSound()
+        }
+
+        if configuration.allowSkipIntro {
+            setupKeyMonitor()
+            scheduleSkipHint()
+        }
+    }
+
+    private func handleDisappear() {
+        dismissTask?.cancel()
+        focusTask?.cancel()
+        skipHintTask?.cancel()
+        soundFadeTask?.cancel()
+        startupSound?.stop()
+        startupSound = nil
+        removeKeyMonitor()
+    }
+
+    private func scheduleFocus() {
+        focusTask?.cancel()
+        focusTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !Task.isCancelled else { return }
+            isFocused = true
+        }
+    }
+
+    private func scheduleSkipHint() {
+        skipHintTask?.cancel()
+        skipHintTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled, !introComplete else { return }
+            showSkipHint = true
+        }
+    }
+
+    private var skipHintTransition: AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom))
+    }
+
+    private var skipHintAnimation: Animation {
+        .easeInOut(duration: reduceMotion ? 0.15 : 0.3)
+    }
+
+    private var introStateAnimation: Animation {
+        .easeInOut(duration: reduceMotion ? 0.15 : 0.2)
+    }
+
+    private var overlayAnimation: Animation {
+        .easeOut(duration: reduceMotion ? 0.12 : 0.4)
+    }
+
+    private var cardAnimation: Animation {
+        if reduceMotion {
+            return .easeOut(duration: 0.12)
+        }
+
+        return .spring(response: 0.5, dampingFraction: 0.8).delay(0.1)
+    }
+
+    private var dismissAnimation: Animation {
+        .easeOut(duration: dismissalDuration)
+    }
+
+    private var dismissalDuration: Double {
+        reduceMotion ? 0.12 : 0.25
+    }
+
+    private var dismissalDelayNanoseconds: UInt64 {
+        UInt64(dismissalDuration * 1_000_000_000)
     }
 }
 
@@ -302,6 +377,7 @@ private struct AirlockCardView: View {
     @Binding var introComplete: Bool
     @ObservedObject var animationController: HelloAnimationController
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @State private var contentOpacity: Double = 0
     @State private var glowPhase: CGFloat = 0
@@ -354,33 +430,16 @@ private struct AirlockCardView: View {
                         customIntro
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .transition(.opacity)
-                            .onAppear {
-                                // Auto-complete intro after duration
-                                DispatchQueue.main.asyncAfter(deadline: .now() + configuration.introDuration) {
-                                    if !introComplete {
-                                        withAnimation(.easeOut(duration: 0.5)) {
-                                            glowOpacity = 0
-                                        }
-                                        withAnimation(.easeInOut(duration: 0.4)) {
-                                            introComplete = true
-                                        }
-                                        withAnimation(.easeIn(duration: 0.3).delay(0.1)) {
-                                            contentOpacity = 1
-                                        }
-                                    }
-                                }
+                            .task(id: configuration.introDuration) {
+                                try? await Task.sleep(
+                                    nanoseconds: UInt64(configuration.introDuration * 1_000_000_000)
+                                )
+                                guard !Task.isCancelled, !introComplete else { return }
+                                completeIntro()
                             }
                     } else {
                         HelloAnimationView(controller: animationController) {
-                            withAnimation(.easeOut(duration: 0.5)) {
-                                glowOpacity = 0
-                            }
-                            withAnimation(.easeInOut(duration: 0.4)) {
-                                introComplete = true
-                            }
-                            withAnimation(.easeIn(duration: 0.3).delay(0.1)) {
-                                contentOpacity = 1
-                            }
+                            completeIntro()
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .transition(.opacity)
@@ -410,7 +469,7 @@ private struct AirlockCardView: View {
                 }
             }
             .frame(width: configuration.cardWidth, height: configuration.cardHeight)
-            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .clipShape(.rect(cornerRadius: 20))
             .shadow(color: .black.opacity(0.3), radius: 30, x: 0, y: 10)
             .shadow(color: .black.opacity(0.15), radius: 60, x: 0, y: 20)
         }
@@ -418,14 +477,48 @@ private struct AirlockCardView: View {
             if !configuration.showIntro {
                 contentOpacity = 1
             } else {
-                withAnimation(.easeIn(duration: 0.5)) {
-                    glowOpacity = 0.6
+                withAnimation(glowAnimation) {
+                    glowOpacity = reduceMotion ? 0.25 : 0.6
                 }
-                withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
-                    glowPhase = 1
+                if !reduceMotion {
+                    withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
+                        glowPhase = 1
+                    }
                 }
             }
         }
+    }
+
+    private func completeIntro() {
+        withAnimation(glowFadeAnimation) {
+            glowOpacity = 0
+        }
+        withAnimation(introCompletionAnimation) {
+            introComplete = true
+        }
+        withAnimation(contentAnimation) {
+            contentOpacity = 1
+        }
+    }
+
+    private var glowAnimation: Animation {
+        .easeIn(duration: reduceMotion ? 0.2 : 0.5)
+    }
+
+    private var glowFadeAnimation: Animation {
+        .easeOut(duration: reduceMotion ? 0.2 : 0.5)
+    }
+
+    private var introCompletionAnimation: Animation {
+        .easeInOut(duration: reduceMotion ? 0.2 : 0.4)
+    }
+
+    private var contentAnimation: Animation {
+        if reduceMotion {
+            return .easeIn(duration: 0.2)
+        }
+
+        return .easeIn(duration: 0.3).delay(0.1)
     }
 }
 
@@ -454,25 +547,37 @@ private struct AirlockSidebarView: View {
 
             // Steps list
             ScrollView {
-                VStack(spacing: 8) {
-                    ForEach(Array(navigator.steps.enumerated()), id: \.element.id) { index, step in
+                LazyVStack(spacing: 8) {
+                    ForEach(navigator.steps.indices, id: \.self) { index in
+                        let step = navigator.steps[index]
                         let status = navigator.status(at: index)
                         let isCurrent = index == navigator.currentIndex
                         let canNavigate = status == .completed
 
-                        AirlockStepRowView(
-                            title: step.title,
-                            icon: step.icon,
-                            status: status,
-                            isCurrent: isCurrent
-                        )
-                        .opacity(canNavigate || isCurrent ? 1.0 : 0.6)
-                        .onTapGesture {
-                            if canNavigate {
+                        if canNavigate {
+                            Button {
                                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                                     navigator.goTo(index: index)
                                 }
+                            } label: {
+                                AirlockStepRowView(
+                                    title: step.title,
+                                    icon: step.icon,
+                                    status: status,
+                                    isCurrent: isCurrent
+                                )
+                                .opacity(1)
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Opens this completed step")
+                        } else {
+                            AirlockStepRowView(
+                                title: step.title,
+                                icon: step.icon,
+                                status: status,
+                                isCurrent: isCurrent
+                            )
+                            .opacity(isCurrent ? 1.0 : 0.6)
                         }
                     }
                 }
@@ -500,9 +605,6 @@ private struct AirlockStepRowView: View {
     let icon: String
     let status: AirlockStepStatus
     let isCurrent: Bool
-
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var isHovering = false
 
     private var statusColor: Color {
         switch status {
@@ -549,9 +651,6 @@ private struct AirlockStepRowView: View {
                 )
         )
         .contentShape(Rectangle())
-        .onHover { hovering in
-            isHovering = hovering
-        }
     }
 }
 
@@ -631,7 +730,7 @@ public struct AirlockContinueButton: View {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(navigator.canContinue ? Color.accentColor : Color.secondary.opacity(0.2))
             )
-            .foregroundColor(navigator.canContinue ? .white : .secondary)
+            .foregroundStyle(navigator.canContinue ? .white : .secondary)
             .scaleEffect(isHovering && navigator.canContinue ? 1.02 : 1.0)
             .animation(.easeInOut(duration: 0.2), value: navigator.canContinue)
         }

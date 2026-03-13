@@ -156,18 +156,13 @@ private struct AirlockEnableContinueModifier: ViewModifier {
 private struct AirlockDelayedContinueModifier: ViewModifier {
     let delay: Double
     @Environment(\.airlockNavigator) private var navigator
-    @State private var hasAppeared = false
 
     func body(content: Content) -> some View {
         content
-            .onAppear {
-                guard !hasAppeared else { return }
-                hasAppeared = true
-
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    navigator?.setContinueEnabled(true)
-                }
+            .task(id: delay) {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                navigator?.setContinueEnabled(true)
             }
     }
 }

@@ -4,6 +4,7 @@
 // Lottie-based "hello" animation for the intro sequence.
 
 import SwiftUI
+import Combine
 import Lottie
 import AppKit
 
@@ -15,7 +16,8 @@ private let airlockUIBundle: Bundle = .module
 // MARK: - Animation Controller
 
 /// Controller for managing the hello animation state
-public class HelloAnimationController: ObservableObject {
+@MainActor
+public final class HelloAnimationController: ObservableObject {
     @Published var shouldSkip: Bool = false
 
     public init() {}

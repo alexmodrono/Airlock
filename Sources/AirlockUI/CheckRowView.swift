@@ -101,6 +101,7 @@ struct CheckRowView: View {
 struct StatusIndicator: View {
     let status: CheckStatus
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @State private var isPulsing = false
 
@@ -145,20 +146,28 @@ struct StatusIndicator: View {
         }
         .frame(width: 18, height: 18)
         .onAppear {
-            if case .checking = status {
-                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
-                    isPulsing = true
-                }
-            }
+            updatePulseAnimation(for: status)
         }
         .onChange(of: status) { _, newStatus in
-            if case .checking = newStatus {
-                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
-                    isPulsing = true
-                }
-            } else {
-                isPulsing = false
+            updatePulseAnimation(for: newStatus)
+        }
+        .onChange(of: reduceMotion) { _, _ in
+            updatePulseAnimation(for: status)
+        }
+    }
+
+    private func updatePulseAnimation(for status: CheckStatus) {
+        guard !reduceMotion else {
+            isPulsing = false
+            return
+        }
+
+        if case .checking = status {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                isPulsing = true
             }
+        } else {
+            isPulsing = false
         }
     }
 }
@@ -181,7 +190,7 @@ struct ActionChip: View {
                     Capsule()
                         .fill(Color.accentColor.opacity(isHovering ? 1.0 : 0.85))
                 )
-                .foregroundColor(.white)
+                .foregroundStyle(.white)
         }
         .buttonStyle(.plain)
         .onHover { hovering in

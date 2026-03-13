@@ -13,7 +13,7 @@ public struct CheckDetailView<Content: View>: View {
     let title: String
     let description: String
     let status: CheckStatus
-    let content: () -> Content
+    let content: Content
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -22,13 +22,13 @@ public struct CheckDetailView<Content: View>: View {
         title: String,
         description: String,
         status: CheckStatus,
-        @ViewBuilder content: @escaping () -> Content = { EmptyView() }
+        @ViewBuilder content: () -> Content = { EmptyView() }
     ) {
         self.icon = icon
         self.title = title
         self.description = description
         self.status = status
-        self.content = content
+        self.content = content()
     }
 
     public var body: some View {
@@ -67,7 +67,7 @@ public struct CheckDetailView<Content: View>: View {
 
             // Custom content with fixed width
             VStack {
-                content()
+                content
             }
             .frame(maxWidth: 420)
 
@@ -147,8 +147,6 @@ struct StatusMessage: View {
 public struct InstructionStep: View {
     let number: Int
     let text: String
-
-    @Environment(\.colorScheme) private var colorScheme
 
     public init(_ number: Int, _ text: String) {
         self.number = number
