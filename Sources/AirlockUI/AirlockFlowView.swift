@@ -176,6 +176,8 @@ public struct AirlockFlowView: View {
             if complete {
                 showSkipHint = false
                 removeKeyMonitor()
+                // Release focus so child views (TextFields, etc.) can receive input
+                isFocused = false
             }
         }
         .onDisappear {
@@ -319,7 +321,11 @@ public struct AirlockFlowView: View {
         focusTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 100_000_000)
             guard !Task.isCancelled else { return }
-            isFocused = true
+            // Only grab focus during intro so child views (TextFields, etc.)
+            // can receive input once the main content is shown.
+            if !introComplete {
+                isFocused = true
+            }
         }
     }
 
