@@ -68,13 +68,17 @@ public struct WindowAccessor: NSViewRepresentable {
             configurationCount += 1
             let isFirstConfiguration = configurationCount == 1
 
-            // Make window visually borderless but keep .titled so canBecomeKey
-            // returns true — required for TextFields to accept focus.
+            // Make window borderless and transparent
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
-            window.styleMask = [.titled, .fullSizeContentView]
+            window.styleMask = [.borderless, .fullSizeContentView]
+
+            // Borderless windows return false from canBecomeKey by default,
+            // which prevents TextFields from accepting focus. Subclass the
+            // window at runtime to override this.
+            KeyableWindowInstaller.install(on: window)
 
             // Remove standard window controls
             window.standardWindowButton(.closeButton)?.isHidden = true
@@ -218,5 +222,48 @@ private class WindowObservingView: NSView {
                 self?.tryConfigureWindow()
             }
         }
+    }
+}
+
+// MARK: - Keyable Window
+
+/// Makes a borderless NSWindow accept key status so TextFields can receive focus.
+///
+/// Borderless windows (`styleMask` without `.titled`) return `false` from
+/// `canBecomeKey` by default. This helper replaces the window's class at runtime
+/// with a subclass that overrides `canBecomeKey` to return `true`.
+enum KeyableWindowInstaller {
+    private static var installedClasses: [String: AnyClass] = [:]
+
+    static func install(on window: NSWindow) {
+        let originalClass: AnyClass = type(of: window)
+        let className = NSStringFromClass(originalClass)
+        let subclassName = "Airlock_Keyable_\(className)"
+
+        if let existing = installedClasses[subclassName] {
+            object_setClass(window, existing)
+            return
+        }
+
+        guard let subclass = objc_allocateClassPair(originalClass, subclassName, 0) else {
+            return
+        }
+
+        let trueBlock: @convention(block) (AnyObject) -> Bool = { _ in true }
+        let trueIMP = imp_implementationWithBlock(trueBlock)
+
+        // Override canBecomeKey to return true
+        if let m = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeKey)) {
+            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeKey), trueIMP, method_getTypeEncoding(m))
+        }
+
+        // Override canBecomeMain to return true
+        if let m = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeMain)) {
+            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeMain), trueIMP, method_getTypeEncoding(m))
+        }
+
+        objc_registerClassPair(subclass)
+        installedClasses[subclassName] = subclass
+        object_setClass(window, subclass)
     }
 }
