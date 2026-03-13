@@ -97,10 +97,8 @@ public struct AirlockFlowView: View {
     @State private var keyMonitor: Any?
     @State private var startupSound: NSSound?
     @State private var dismissTask: Task<Void, Never>?
-    @State private var focusTask: Task<Void, Never>?
     @State private var skipHintTask: Task<Void, Never>?
     @State private var soundFadeTask: Task<Void, Never>?
-    @FocusState private var isFocused: Bool
     @StateObject private var animationController = HelloAnimationController()
 
     private var configuration: AirlockConfiguration
@@ -166,8 +164,6 @@ public struct AirlockFlowView: View {
             .animation(skipHintAnimation, value: showSkipHint)
             .animation(introStateAnimation, value: introComplete)
         }
-        .focusable()
-        .focused($isFocused)
         .background(WindowAccessor())
         .onAppear {
             handleAppear()
@@ -176,19 +172,10 @@ public struct AirlockFlowView: View {
             if complete {
                 showSkipHint = false
                 removeKeyMonitor()
-                // Release focus so child views (TextFields, etc.) can receive input
-                isFocused = false
             }
         }
         .onDisappear {
             handleDisappear()
-        }
-        .onKeyPress(.escape) {
-            if !introComplete && configuration.showIntro && configuration.allowSkipIntro {
-                skipIntroAnimation()
-                return .handled
-            }
-            return .ignored
         }
     }
 
@@ -289,7 +276,6 @@ public struct AirlockFlowView: View {
 
     private func handleAppear() {
         startAnimations()
-        scheduleFocus()
 
         guard configuration.showIntro else {
             introComplete = true
@@ -308,25 +294,11 @@ public struct AirlockFlowView: View {
 
     private func handleDisappear() {
         dismissTask?.cancel()
-        focusTask?.cancel()
         skipHintTask?.cancel()
         soundFadeTask?.cancel()
         startupSound?.stop()
         startupSound = nil
         removeKeyMonitor()
-    }
-
-    private func scheduleFocus() {
-        focusTask?.cancel()
-        focusTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            guard !Task.isCancelled else { return }
-            // Only grab focus during intro so child views (TextFields, etc.)
-            // can receive input once the main content is shown.
-            if !introComplete {
-                isFocused = true
-            }
-        }
     }
 
     private func scheduleSkipHint() {
