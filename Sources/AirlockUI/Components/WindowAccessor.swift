@@ -46,8 +46,7 @@ public struct WindowAccessor: NSViewRepresentable {
         private var observers: [NSObjectProtocol] = []
         private var isSystemSettingsActive = false
         private var configurationCount = 0
-        private var frameObservation: NSKeyValueObservation?
-        private var lastFrameCorrectionTime: Date = .distantPast
+        private var pendingConfigurationWorkItem: DispatchWorkItem?
 
         /// Window level high enough to cover the menu bar but below screen saver.
         /// .mainMenu (level 24) is just above the menu bar.
@@ -59,8 +58,8 @@ public struct WindowAccessor: NSViewRepresentable {
         }
 
         deinit {
+            pendingConfigurationWorkItem?.cancel()
             observers.forEach { NotificationCenter.default.removeObserver($0) }
-            frameObservation?.invalidate()
         }
 
         func configure(window: NSWindow) {
@@ -68,7 +67,28 @@ public struct WindowAccessor: NSViewRepresentable {
             configurationCount += 1
             let isFirstConfiguration = configurationCount == 1
 
-            // Make window borderless and transparent
+            scheduleOverlayConfiguration(for: window, isFirstConfiguration: isFirstConfiguration)
+        }
+
+        private func scheduleOverlayConfiguration(for window: NSWindow, isFirstConfiguration: Bool) {
+            pendingConfigurationWorkItem?.cancel()
+
+            let workItem = DispatchWorkItem { [weak self, weak window] in
+                guard let self, let window else { return }
+                self.applyOverlayConfiguration(to: window, isFirstConfiguration: isFirstConfiguration)
+            }
+
+            pendingConfigurationWorkItem = workItem
+            DispatchQueue.main.async(execute: workItem)
+        }
+
+        private func applyOverlayConfiguration(to window: NSWindow, isFirstConfiguration: Bool) {
+            guard managedWindow === window else { return }
+
+            // Defer the borderless transition until after the hosting window is
+            // attached and AppKit's initial layout transaction has completed.
+            // Swapping out NSThemeFrame during that transaction can crash when
+            // AppKit later asks the deallocated frame for maskView.
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
@@ -93,44 +113,11 @@ public struct WindowAccessor: NSViewRepresentable {
                 window.level = Self.overlayLevel
             }
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-
-            // Set fullscreen frame
             updateWindowFrame(window)
 
-            // Make key and bring to front on first configuration
             if isFirstConfiguration {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
-
-                // Observe frame changes to fight against SwiftUI's window resizing
-                setupFrameObserver(for: window)
-
-                // Re-apply frame multiple times during initialization to fight SwiftUI layout
-                for delay in [0.02, 0.05, 0.1, 0.2] {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                        self?.updateWindowFrame(window)
-                    }
-                }
-            }
-        }
-
-        private func setupFrameObserver(for window: NSWindow) {
-            // Observe window frame changes and snap back to fullscreen.
-            // This fights against SwiftUI's .windowResizability(.contentSize).
-            // We use a debounce to avoid infinite loops.
-            frameObservation = window.observe(\.frame, options: [.new]) { [weak self] window, _ in
-                guard let self = self else { return }
-                guard let screen = window.screen ?? NSScreen.main else { return }
-
-                // Only correct if frame doesn't match screen
-                guard window.frame != screen.frame else { return }
-
-                // Debounce: don't correct more than once per 10ms to avoid loops
-                let now = Date()
-                guard now.timeIntervalSince(self.lastFrameCorrectionTime) > 0.01 else { return }
-
-                self.lastFrameCorrectionTime = now
-                self.updateWindowFrame(window)
             }
         }
 
@@ -185,6 +172,7 @@ public struct WindowAccessor: NSViewRepresentable {
             guard let window = managedWindow else { return }
             isSystemSettingsActive = false
             window.level = Self.overlayLevel
+            updateWindowFrame(window)
             window.makeKeyAndOrderFront(nil)
         }
     }
@@ -252,14 +240,12 @@ enum KeyableWindowInstaller {
         let trueBlock: @convention(block) (AnyObject) -> Bool = { _ in true }
         let trueIMP = imp_implementationWithBlock(trueBlock)
 
-        // Override canBecomeKey to return true
-        if let m = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeKey)) {
-            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeKey), trueIMP, method_getTypeEncoding(m))
+        if let method = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeKey)) {
+            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeKey), trueIMP, method_getTypeEncoding(method))
         }
 
-        // Override canBecomeMain to return true
-        if let m = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeMain)) {
-            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeMain), trueIMP, method_getTypeEncoding(m))
+        if let method = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeMain)) {
+            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeMain), trueIMP, method_getTypeEncoding(method))
         }
 
         objc_registerClassPair(subclass)
