@@ -17,6 +17,9 @@ private let allowedOverlayApps: Set<String> = [
 /// allowing the Airlock overlay to cover the entire screen.
 /// System Settings is allowed to appear above the overlay so users can grant permissions.
 ///
+/// When the view is removed from the hierarchy, the window is automatically
+/// restored to its original state (style mask, level, shadow, etc.).
+///
 /// Use this in custom intro views to ensure proper window configuration:
 /// ```swift
 /// MyCustomIntroView()
@@ -29,6 +32,9 @@ public struct WindowAccessor: NSViewRepresentable {
         let view = WindowObservingView()
         view.onWindowAttached = { window in
             context.coordinator.configure(window: window)
+        }
+        view.onWindowDetached = {
+            context.coordinator.restoreWindow()
         }
         return view
     }
@@ -47,6 +53,24 @@ public struct WindowAccessor: NSViewRepresentable {
         private var isSystemSettingsActive = false
         private var configurationCount = 0
         private var pendingConfigurationWorkItem: DispatchWorkItem?
+        private var savedWindowState: SavedWindowState?
+
+        /// Snapshot of the window properties before Airlock modifies them.
+        private struct SavedWindowState {
+            let originalClass: AnyClass
+            let styleMask: NSWindow.StyleMask
+            let isOpaque: Bool
+            let backgroundColor: NSColor
+            let titlebarAppearsTransparent: Bool
+            let titleVisibility: NSWindow.TitleVisibility
+            let hasShadow: Bool
+            let level: NSWindow.Level
+            let collectionBehavior: NSWindow.CollectionBehavior
+            let frame: NSRect
+            let closeButtonHidden: Bool
+            let miniaturizeButtonHidden: Bool
+            let zoomButtonHidden: Bool
+        }
 
         /// Window level high enough to cover the menu bar but below screen saver.
         /// .mainMenu (level 24) is just above the menu bar.
@@ -60,6 +84,7 @@ public struct WindowAccessor: NSViewRepresentable {
         deinit {
             pendingConfigurationWorkItem?.cancel()
             observers.forEach { NotificationCenter.default.removeObserver($0) }
+            restoreWindow()
         }
 
         func configure(window: NSWindow) {
@@ -68,6 +93,37 @@ public struct WindowAccessor: NSViewRepresentable {
             let isFirstConfiguration = configurationCount == 1
 
             scheduleOverlayConfiguration(for: window, isFirstConfiguration: isFirstConfiguration)
+        }
+
+        /// Restore the managed window to its pre-Airlock state.
+        func restoreWindow() {
+            guard let window = managedWindow, let state = savedWindowState else { return }
+            savedWindowState = nil
+            managedWindow = nil
+
+            // Restore the original class first, before any property changes.
+            // This un-does the isa-swizzle so KVO observer deregistrations
+            // (triggered by style mask / content view changes) match the
+            // class under which they were originally registered.
+            let currentClass: AnyClass = type(of: window)
+            if currentClass !== state.originalClass {
+                object_setClass(window, state.originalClass)
+            }
+
+            window.styleMask = state.styleMask
+            window.titlebarAppearsTransparent = state.titlebarAppearsTransparent
+            window.titleVisibility = state.titleVisibility
+            window.isOpaque = state.isOpaque
+            window.backgroundColor = state.backgroundColor
+            window.hasShadow = state.hasShadow
+            window.level = state.level
+            window.collectionBehavior = state.collectionBehavior
+
+            window.standardWindowButton(.closeButton)?.isHidden = state.closeButtonHidden
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = state.miniaturizeButtonHidden
+            window.standardWindowButton(.zoomButton)?.isHidden = state.zoomButtonHidden
+
+            window.setFrame(state.frame, display: true, animate: false)
         }
 
         private func scheduleOverlayConfiguration(for window: NSWindow, isFirstConfiguration: Bool) {
@@ -84,6 +140,25 @@ public struct WindowAccessor: NSViewRepresentable {
 
         private func applyOverlayConfiguration(to window: NSWindow, isFirstConfiguration: Bool) {
             guard managedWindow === window else { return }
+
+            // Save the original window state before any modifications.
+            if savedWindowState == nil {
+                savedWindowState = SavedWindowState(
+                    originalClass: type(of: window),
+                    styleMask: window.styleMask,
+                    isOpaque: window.isOpaque,
+                    backgroundColor: window.backgroundColor,
+                    titlebarAppearsTransparent: window.titlebarAppearsTransparent,
+                    titleVisibility: window.titleVisibility,
+                    hasShadow: window.hasShadow,
+                    level: window.level,
+                    collectionBehavior: window.collectionBehavior,
+                    frame: window.frame,
+                    closeButtonHidden: window.standardWindowButton(.closeButton)?.isHidden ?? false,
+                    miniaturizeButtonHidden: window.standardWindowButton(.miniaturizeButton)?.isHidden ?? false,
+                    zoomButtonHidden: window.standardWindowButton(.zoomButton)?.isHidden ?? false
+                )
+            }
 
             // Defer the borderless transition until after the hosting window is
             // attached and AppKit's initial layout transaction has completed.
@@ -184,13 +259,20 @@ public struct WindowAccessor: NSViewRepresentable {
 /// This is more reliable than using DispatchQueue.main.async.
 private class WindowObservingView: NSView {
     var onWindowAttached: ((NSWindow) -> Void)?
+    var onWindowDetached: (() -> Void)?
     private var hasNotified = false
     private var retryCount = 0
     private let maxRetries = 10
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        tryConfigureWindow()
+        if window != nil {
+            tryConfigureWindow()
+        } else if hasNotified {
+            // View is being removed from the window — restore original state.
+            hasNotified = false
+            onWindowDetached?()
+        }
     }
 
     override func viewDidMoveToSuperview() {
