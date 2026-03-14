@@ -9,7 +9,7 @@ import Airlock
 /// Creates a welcome check with demo content.
 func createDemoWelcomeCheck() -> WelcomeCheck {
     WelcomeCheck(
-        appName: "Cosmos",
+        appName: "Airlock Demo",
         subtitle: "This example shows the FlightCheck API in action.",
         features: [
             .init(

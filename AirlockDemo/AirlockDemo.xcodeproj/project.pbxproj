@@ -7,20 +7,23 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0692F9E42F65F8D100949A8D /* Airlock in Frameworks */ = {isa = PBXBuildFile; productRef = 0692F9E32F65F8D100949A8D /* Airlock */; };
+		0692F9E62F65F8D100949A8D /* AirlockChecks in Frameworks */ = {isa = PBXBuildFile; productRef = 0692F9E52F65F8D100949A8D /* AirlockChecks */; };
+		0692F9E82F65F8D100949A8D /* AirlockCore in Frameworks */ = {isa = PBXBuildFile; productRef = 0692F9E72F65F8D100949A8D /* AirlockCore */; };
+		0692F9EA2F65F8D100949A8D /* AirlockUI in Frameworks */ = {isa = PBXBuildFile; productRef = 0692F9E92F65F8D100949A8D /* AirlockUI */; };
 		A1000001229E0001 /* AirlockDemoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000011229E0001 /* AirlockDemoApp.swift */; };
 		A1000002229E0001 /* DemoChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000012229E0001 /* DemoChecks.swift */; };
-		A1000005229E0001 /* DemoSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000016229E0001 /* DemoSteps.swift */; };
 		A1000003229E0001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000013229E0001 /* Assets.xcassets */; };
-		A1000004229E0001 /* Airlock in Frameworks */ = {isa = PBXBuildFile; productRef = A1000024229E0001 /* Airlock */; };
+		A1000005229E0001 /* DemoSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000016229E0001 /* DemoSteps.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A1000011229E0001 /* AirlockDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirlockDemoApp.swift; sourceTree = "<group>"; };
 		A1000012229E0001 /* DemoChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoChecks.swift; sourceTree = "<group>"; };
-		A1000016229E0001 /* DemoSteps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSteps.swift; sourceTree = "<group>"; };
 		A1000013229E0001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A1000014229E0001 /* AirlockDemo.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AirlockDemo.entitlements; sourceTree = "<group>"; };
 		A1000015229E0001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1000016229E0001 /* DemoSteps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSteps.swift; sourceTree = "<group>"; };
 		A1000021229E0001 /* AirlockDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AirlockDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -29,7 +32,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000004229E0001 /* Airlock in Frameworks */,
+				0692F9EA2F65F8D100949A8D /* AirlockUI in Frameworks */,
+				0692F9E82F65F8D100949A8D /* AirlockCore in Frameworks */,
+				0692F9E42F65F8D100949A8D /* Airlock in Frameworks */,
+				0692F9E62F65F8D100949A8D /* AirlockChecks in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -82,7 +88,10 @@
 			);
 			name = AirlockDemo;
 			packageProductDependencies = (
-				A1000024229E0001 /* Airlock */,
+				0692F9E32F65F8D100949A8D /* Airlock */,
+				0692F9E52F65F8D100949A8D /* AirlockChecks */,
+				0692F9E72F65F8D100949A8D /* AirlockCore */,
+				0692F9E92F65F8D100949A8D /* AirlockUI */,
 			);
 			productName = AirlockDemo;
 			productReference = A1000021229E0001 /* AirlockDemo.app */;
@@ -113,7 +122,7 @@
 			);
 			mainGroup = A1000030229E0001;
 			packageReferences = (
-				A1000023229E0001 /* XCLocalSwiftPackageReference "../" */,
+				0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */,
 			);
 			productRefGroup = A1000032229E0001 /* Products */;
 			projectDirPath = "";
@@ -350,17 +359,37 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		A1000023229E0001 /* XCLocalSwiftPackageReference "../" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../;
+/* Begin XCRemoteSwiftPackageReference section */
+		0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/alexmodrono/Airlock";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
 		};
-/* End XCLocalSwiftPackageReference section */
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		A1000024229E0001 /* Airlock */ = {
+		0692F9E32F65F8D100949A8D /* Airlock */ = {
 			isa = XCSwiftPackageProductDependency;
+			package = 0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */;
 			productName = Airlock;
+		};
+		0692F9E52F65F8D100949A8D /* AirlockChecks */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */;
+			productName = AirlockChecks;
+		};
+		0692F9E72F65F8D100949A8D /* AirlockCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */;
+			productName = AirlockCore;
+		};
+		0692F9E92F65F8D100949A8D /* AirlockUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */;
+			productName = AirlockUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

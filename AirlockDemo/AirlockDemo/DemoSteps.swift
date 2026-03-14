@@ -30,7 +30,7 @@ struct WelcomeStepContent: View {
             AnimatedFeatureHighlight(features: highlightFeatures)
 
             VStack(spacing: 8) {
-                Text("Welcome to Cosmos")
+                Text("Welcome to Airlock")
                     .font(.title2)
                     .fontWeight(.semibold)
 
@@ -53,9 +53,6 @@ struct WelcomeStepContent: View {
             }
             .padding(.horizontal, 24)
 
-            AirlockInlineContinueButton()
-                .padding(.top, 8)
-
             Spacer().frame(height: 24)
         }
         .airlockEnableContinueAfter(seconds: 2)
@@ -69,6 +66,7 @@ struct PermissionsStepContent: View {
     @StateObject private var checker = PermissionChecker(
         permissions: [.accessibility, .screenRecording]
     )
+    @State private var skipped = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -78,7 +76,7 @@ struct PermissionsStepContent: View {
                 icon: checker.allGranted ? "checkmark.shield.fill" : "lock.shield.fill",
                 title: checker.allGranted ? "Permissions Granted" : "Permissions",
                 subtitle: checker.allGranted
-                    ? "Cosmos can now continue."
+                    ? "All permissions are configured. You can continue."
                     : "Grant the sample permissions used in this demo.",
                 iconColor: checker.allGranted ? .green : .blue
             )
@@ -86,7 +84,7 @@ struct PermissionsStepContent: View {
             AirlockInfoCard(
                 icon: "lock.shield.fill",
                 title: "Demo Note",
-                description: "This step uses Airlock's reusable permission components. Real apps should request only the permissions they actually need.",
+                description: "This step uses Airlock's **PermissionChecker** to monitor and request system permissions. Each row calls `PermissionType.requestAccess()` which triggers the real macOS system prompt.",
                 color: .blue
             )
             .padding(.horizontal, 24)
@@ -95,20 +93,163 @@ struct PermissionsStepContent: View {
                 title: "Sample Permissions",
                 permissions: [.accessibility, .screenRecording],
                 permissionStates: checker.permissionStates
+            ) { permission in
+                Task {
+                    await checker.requestAccess(for: permission)
+                }
+            }
+            .padding(.horizontal, 24)
+
+            if !checker.allGranted && !skipped {
+                Button {
+                    skipped = true
+                    navigator?.setContinueEnabled(true)
+                } label: {
+                    Text("Skip permissions for this demo")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    if hovering {
+                        NSCursor.pointingHand.push()
+                    } else {
+                        NSCursor.pop()
+                    }
+                }
+            }
+
+            Spacer()
+        }
+        .onAppear {
+            checker.startMonitoring(interval: 1.0)
+            navigator?.setContinueEnabled(checker.allGranted || skipped)
+        }
+        .onDisappear {
+            checker.stopMonitoring()
+        }
+        .onChange(of: checker.permissionStates) { _, _ in
+            navigator?.setContinueEnabled(checker.allGranted || skipped)
+        }
+    }
+}
+
+// MARK: - License Step Content
+
+struct LicenseStepContent: View {
+    @Environment(\.airlockNavigator) private var navigator
+
+    @State private var licenseKey: String = ""
+    @State private var validationState: ValidationState = .idle
+    @State private var errorMessage: String?
+
+    enum ValidationState {
+        case idle
+        case validating
+        case valid
+    }
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer().frame(height: 32)
+
+            AirlockStepHeader(
+                icon: validationState == .valid ? "checkmark.circle.fill" : "key.fill",
+                title: validationState == .valid ? "License Activated" : "Activate License",
+                subtitle: validationState == .valid
+                    ? "Your license has been verified."
+                    : "Enter a license key to unlock the full experience.",
+                iconColor: validationState == .valid ? .green : .orange
+            )
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("License Key")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .tracking(1)
+
+                HStack(spacing: 12) {
+                    TextField("XXXX-XXXX-XXXX-XXXX", text: $licenseKey)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 14, design: .monospaced))
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.primary.opacity(0.05))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(
+                                    errorMessage != nil ? Color.red.opacity(0.5) : Color.primary.opacity(0.1),
+                                    lineWidth: 1
+                                )
+                        )
+                        .disabled(validationState == .valid)
+                }
+
+                if let error = errorMessage {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text(error)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                }
+            }
+            .padding(.horizontal, 40)
+
+            AirlockInfoCard(
+                icon: "info.circle.fill",
+                title: "Demo Tip",
+                description: "Type **demo** to simulate a successful activation, or anything else to see the error state. This step uses the **button API** to run validation on tap.",
+                color: .purple
             )
             .padding(.horizontal, 24)
 
             Spacer()
         }
         .onAppear {
-            checker.startMonitoring(interval: 1.0)
-            navigator?.setContinueEnabled(checker.allGranted)
+            configureButton()
         }
-        .onDisappear {
-            checker.stopMonitoring()
+        .onChange(of: licenseKey) { _, _ in
+            if validationState == .valid { return }
+            errorMessage = nil
+            configureButton()
         }
-        .onChange(of: checker.permissionStates) { _, _ in
-            navigator?.setContinueEnabled(checker.allGranted)
+    }
+
+    private func configureButton() {
+        guard validationState != .valid else { return }
+
+        if licenseKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            navigator?.setButtonLabel("Activate", icon: "key.fill")
+            navigator?.setContinueEnabled(false)
+        } else {
+            navigator?.setButtonAction(label: "Activate", icon: "key.fill") {
+                await validateLicense()
+            }
+            navigator?.setContinueEnabled(true)
+        }
+    }
+
+    @MainActor
+    private func validateLicense() async {
+        validationState = .validating
+        errorMessage = nil
+
+        // Simulate network delay
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+        let trimmed = licenseKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmed == "demo" {
+            validationState = .valid
+            navigator?.resetButton()
+            navigator?.setContinueEnabled(true)
+        } else {
+            validationState = .idle
+            errorMessage = "Invalid license key. Try \"demo\" for this example."
+            configureButton()
         }
     }
 }
@@ -148,29 +289,21 @@ struct ServiceStepContent: View {
             }
             .padding(.horizontal, 24)
 
-            if serviceState != .ready {
-                Button {
-                    startService()
-                } label: {
-                    HStack(spacing: 8) {
-                        if serviceState == .starting {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "play.fill")
-                        }
-                        Text(serviceState == .starting ? "Starting Service..." : "Start Local Service")
-                    }
-                    .frame(minWidth: 180)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(serviceState == .starting)
+            if serviceState == .unavailable {
+                AirlockCapabilityChips([
+                    (icon: "server.rack", label: "Local Service", color: .blue),
+                    (icon: "network", label: "No Network Required", color: .green),
+                    (icon: "lock.fill", label: "Sandboxed", color: .purple),
+                    (icon: "bolt.fill", label: "Fast Startup", color: .orange)
+                ])
+                .padding(.horizontal, 24)
             }
 
             Spacer()
         }
         .onAppear {
             navigator?.setContinueEnabled(serviceState == .ready)
+            configureButtonForState()
             if serviceState == .checking {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                     if serviceState == .checking {
@@ -181,7 +314,34 @@ struct ServiceStepContent: View {
         }
         .onChange(of: serviceState) { _, newValue in
             navigator?.setContinueEnabled(newValue == .ready)
+            configureButtonForState()
         }
+    }
+
+    private func configureButtonForState() {
+        switch serviceState {
+        case .checking:
+            navigator?.setButtonLabel("Checking...", icon: "arrow.triangle.2.circlepath")
+            navigator?.setContinueEnabled(false)
+        case .unavailable:
+            navigator?.setButtonAction(label: "Start Service", icon: "play.fill") {
+                await startService()
+            }
+            navigator?.setContinueEnabled(true)
+        case .starting:
+            navigator?.setButtonLabel("Starting...", icon: "arrow.triangle.2.circlepath")
+            navigator?.setContinueEnabled(false)
+        case .ready:
+            navigator?.resetButton()
+            navigator?.setContinueEnabled(true)
+        }
+    }
+
+    @MainActor
+    private func startService() async {
+        serviceState = .starting
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        serviceState = .ready
     }
 
     private var headerIcon: String {
@@ -230,18 +390,11 @@ struct ServiceStepContent: View {
         case .checking:
             InfoBanner(message: "Checking for a local dependency...", style: .info)
         case .unavailable:
-            InfoBanner(message: "The local helper is not running yet. Start it to continue.", style: .warning)
+            InfoBanner(message: "The local helper is not running yet. Use the sidebar button to start it.", style: .warning)
         case .starting:
             ProgressBarView(progress: 0.55, label: "Starting local service...", showPercentage: false)
         case .ready:
             InfoBanner(message: "Local service is connected and ready.", style: .success)
-        }
-    }
-
-    private func startService() {
-        serviceState = .starting
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            serviceState = .ready
         }
     }
 }
@@ -277,10 +430,19 @@ struct ReadyStepContent: View {
                     .font(.title2)
                     .fontWeight(.semibold)
 
-                Text("Cosmos is configured and ready.")
+                Text("Everything is configured and ready.")
                     .font(.body)
                     .foregroundStyle(.secondary)
             }
+
+            AirlockProgressSteps([
+                (text: "Welcome tour completed", isDone: true),
+                (text: "System permissions granted", isDone: true),
+                (text: "License activated", isDone: true),
+                (text: "Local service started", isDone: true)
+            ])
+            .padding(.horizontal, 40)
+            .opacity(appeared ? 1.0 : 0)
 
             FeatureGrid(
                 features: [
@@ -301,6 +463,7 @@ struct ReadyStepContent: View {
                 appeared = true
             }
             navigator?.setContinueEnabled(true)
+            navigator?.setButtonLabel("Get Started", icon: "arrow.right.circle.fill")
         }
     }
 }
@@ -325,6 +488,15 @@ func createDemoSteps() -> [AnyAirlockStep] {
             subtitle: "Grant sample system permissions"
         ) {
             PermissionsStepContent()
+        }),
+
+        AnyAirlockStep(AirlockStep(
+            id: "license",
+            title: "License",
+            icon: "key.fill",
+            subtitle: "Activate a demo license"
+        ) {
+            LicenseStepContent()
         }),
 
         AnyAirlockStep(AirlockStep(
