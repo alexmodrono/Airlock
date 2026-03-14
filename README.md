@@ -1,5 +1,7 @@
 # Airlock
 
+![Airlock Demo](./demo.gif)
+
 Airlock is a standalone Swift package for building first-class onboarding flows for macOS apps.
 
 It gives you:
