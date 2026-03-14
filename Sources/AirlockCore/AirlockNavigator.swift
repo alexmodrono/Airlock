@@ -44,6 +44,20 @@ public final class AirlockNavigator: ObservableObject {
     /// Whether a validation is currently running.
     @Published public private(set) var isValidating: Bool = false
 
+    /// Whether the sidebar button is running a custom action.
+    @Published public private(set) var isRunningAction: Bool = false
+
+    /// Custom label for the sidebar button. When nil, uses the default.
+    @Published public private(set) var buttonLabel: String?
+
+    /// Custom icon for the sidebar button. When nil, uses the default.
+    @Published public private(set) var buttonIcon: String?
+
+    /// Custom action for the sidebar button. When set, the button runs this
+    /// instead of advancing. The step is responsible for calling
+    /// ``resetButton()`` when the action succeeds and the user should advance.
+    public private(set) var customButtonAction: (@MainActor () async -> Void)?
+
     // MARK: - Configuration
 
     /// The app name to display in the UI.
@@ -124,13 +138,62 @@ public final class AirlockNavigator: ObservableObject {
         canContinue = enabled
     }
 
-    /// Advances to the next step.
-    ///
-    /// If validation is configured for the current step, it will run first.
-    /// The continue button is disabled until the next step enables it.
-    public func goToNext() {
-        guard !isValidating else { return }
+    // MARK: - Button Configuration
 
+    /// Configures the sidebar button with a custom action.
+    ///
+    /// While a custom action is set, tapping the sidebar button runs the action
+    /// instead of advancing. The step should call ``resetButton()`` when the
+    /// action succeeds and the flow should advance normally.
+    ///
+    /// - Parameters:
+    ///   - label: Button label (e.g., "Validate", "Sign In")
+    ///   - icon: SF Symbol name for the button icon
+    ///   - action: Async closure to run when the button is tapped
+    public func setButtonAction(
+        label: String,
+        icon: String,
+        action: @escaping @MainActor () async -> Void
+    ) {
+        buttonLabel = label
+        buttonIcon = icon
+        customButtonAction = action
+    }
+
+    /// Changes the sidebar button's label and icon without setting a custom action.
+    /// The button still advances to the next step (or completes the flow) when tapped.
+    public func setButtonLabel(_ label: String, icon: String? = nil) {
+        buttonLabel = label
+        buttonIcon = icon
+        customButtonAction = nil
+    }
+
+    /// Resets the sidebar button to its default appearance and behavior.
+    public func resetButton() {
+        buttonLabel = nil
+        buttonIcon = nil
+        customButtonAction = nil
+    }
+
+    /// Activates the sidebar button.
+    ///
+    /// If a custom action is set via ``setButtonAction(label:icon:action:)``,
+    /// runs it. Otherwise advances to the next step. If validation is configured
+    /// for the current step, it will run first.
+    public func goToNext() {
+        guard !isValidating, !isRunningAction else { return }
+
+        // Custom action path — run the step's action instead of advancing.
+        if let action = customButtonAction {
+            Task {
+                isRunningAction = true
+                await action()
+                isRunningAction = false
+            }
+            return
+        }
+
+        // Default path — advance to the next step.
         Task {
             // Run validation if present
             if let step = currentStep, step.hasValidation {
@@ -141,28 +204,34 @@ public final class AirlockNavigator: ObservableObject {
                 guard passed else { return }
             }
 
-            // Mark current step as completed
+            advanceToNextStep()
+        }
+    }
+
+    /// Internal: moves to the next step or completes the flow.
+    private func advanceToNextStep() {
+        // Mark current step as completed
+        if let step = currentStep {
+            stepStatuses[step.id] = .completed
+        }
+
+        // Check if we're at the end
+        if isLastStep {
+            complete()
+            return
+        }
+
+        // Move to next step
+        let nextIndex = currentIndex + 1
+        if nextIndex < steps.count {
+            // Reset state for new step
+            canContinue = false
+            resetButton()
+
+            // Update statuses
+            currentIndex = nextIndex
             if let step = currentStep {
-                stepStatuses[step.id] = .completed
-            }
-
-            // Check if we're at the end
-            if isLastStep {
-                complete()
-                return
-            }
-
-            // Move to next step
-            let nextIndex = currentIndex + 1
-            if nextIndex < steps.count {
-                // Reset continue state for new step
-                canContinue = false
-
-                // Update statuses
-                currentIndex = nextIndex
-                if let step = currentStep {
-                    stepStatuses[step.id] = .current
-                }
+                stepStatuses[step.id] = .current
             }
         }
     }
@@ -177,6 +246,7 @@ public final class AirlockNavigator: ObservableObject {
         }
 
         currentIndex -= 1
+        resetButton()
 
         if let step = currentStep {
             stepStatuses[step.id] = .current
@@ -199,6 +269,7 @@ public final class AirlockNavigator: ObservableObject {
         }
 
         currentIndex = index
+        resetButton()
 
         if let step = currentStep {
             stepStatuses[step.id] = .current

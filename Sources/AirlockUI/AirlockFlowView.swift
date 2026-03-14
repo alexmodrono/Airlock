@@ -670,6 +670,9 @@ public struct AirlockContinueButton: View {
     @State private var isHovering = false
 
     private var buttonText: String {
+        if let custom = navigator.buttonLabel {
+            return custom
+        }
         if navigator.isLastStep && navigator.canContinue {
             return "Get Started"
         }
@@ -677,10 +680,17 @@ public struct AirlockContinueButton: View {
     }
 
     private var buttonIcon: String {
+        if let custom = navigator.buttonIcon {
+            return custom
+        }
         if navigator.isLastStep && navigator.canContinue {
             return "arrow.right.circle.fill"
         }
         return "arrow.forward"
+    }
+
+    private var isBusy: Bool {
+        navigator.isValidating || navigator.isRunningAction
     }
 
     public init(navigator: AirlockNavigator) {
@@ -692,7 +702,7 @@ public struct AirlockContinueButton: View {
             navigator.goToNext()
         } label: {
             HStack(spacing: 8) {
-                if navigator.isValidating {
+                if isBusy {
                     ProgressView()
                         .controlSize(.small)
                 } else {
@@ -713,7 +723,7 @@ public struct AirlockContinueButton: View {
             .animation(.easeInOut(duration: 0.2), value: navigator.canContinue)
         }
         .buttonStyle(.plain)
-        .disabled(!navigator.canContinue || navigator.isValidating)
+        .disabled(!navigator.canContinue || isBusy)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) {
                 isHovering = hovering

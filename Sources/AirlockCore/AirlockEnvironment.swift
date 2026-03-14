@@ -134,6 +134,34 @@ public extension View {
     func airlockEnableContinueAfter(seconds: Double) -> some View {
         modifier(AirlockDelayedContinueModifier(delay: seconds))
     }
+
+    /// Configures the sidebar button with a custom action for this step.
+    ///
+    /// While the custom action is set, tapping the sidebar button runs the
+    /// action instead of advancing. Call ``AirlockNavigator/resetButton()``
+    /// from within the action (after success) to switch the button back
+    /// to the default advance behavior.
+    ///
+    /// Example:
+    /// ```swift
+    /// MyStepContent()
+    ///     .airlockButton(label: "Validate", icon: "magnifyingglass") {
+    ///         await validateServer()
+    ///     }
+    /// ```
+    func airlockButton(
+        label: String,
+        icon: String,
+        action: @escaping @MainActor () async -> Void
+    ) -> some View {
+        modifier(AirlockButtonActionModifier(label: label, icon: icon, action: action))
+    }
+
+    /// Sets a custom label and icon on the sidebar button without changing
+    /// its behavior (it still advances to the next step when tapped).
+    func airlockButtonLabel(_ label: String, icon: String? = nil) -> some View {
+        modifier(AirlockButtonLabelModifier(label: label, icon: icon))
+    }
 }
 
 // MARK: - Continue Modifiers
@@ -163,6 +191,35 @@ private struct AirlockDelayedContinueModifier: ViewModifier {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 navigator?.setContinueEnabled(true)
+            }
+    }
+}
+
+// MARK: - Button Modifiers
+
+private struct AirlockButtonActionModifier: ViewModifier {
+    let label: String
+    let icon: String
+    let action: @MainActor () async -> Void
+    @Environment(\.airlockNavigator) private var navigator
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                navigator?.setButtonAction(label: label, icon: icon, action: action)
+            }
+    }
+}
+
+private struct AirlockButtonLabelModifier: ViewModifier {
+    let label: String
+    let icon: String?
+    @Environment(\.airlockNavigator) private var navigator
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                navigator?.setButtonLabel(label, icon: icon)
             }
     }
 }
