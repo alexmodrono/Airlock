@@ -46,8 +46,6 @@ public struct WindowAccessor: NSViewRepresentable {
         private var observers: [NSObjectProtocol] = []
         private var isSystemSettingsActive = false
         private var configurationCount = 0
-        private var frameObservation: NSKeyValueObservation?
-        private var lastFrameCorrectionTime: Date = .distantPast
 
         /// Window level high enough to cover the menu bar but below screen saver.
         /// .mainMenu (level 24) is just above the menu bar.
@@ -60,7 +58,6 @@ public struct WindowAccessor: NSViewRepresentable {
 
         deinit {
             observers.forEach { NotificationCenter.default.removeObserver($0) }
-            frameObservation?.invalidate()
         }
 
         func configure(window: NSWindow) {
@@ -68,17 +65,17 @@ public struct WindowAccessor: NSViewRepresentable {
             configurationCount += 1
             let isFirstConfiguration = configurationCount == 1
 
-            // Make window borderless and transparent
+            // Preserve the existing titled host window. Replacing AppKit's
+            // title-bar window frame during SwiftUI's initial layout can
+            // deallocate NSThemeFrame mid-transaction on macOS, which crashes
+            // when AppKit asks the old frame for maskView.
+            var styleMask = window.styleMask
+            styleMask.insert(.fullSizeContentView)
+            window.styleMask = styleMask
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
-            window.styleMask = [.borderless, .fullSizeContentView]
-
-            // Borderless windows return false from canBecomeKey by default,
-            // which prevents TextFields from accepting focus. Subclass the
-            // window at runtime to override this.
-            KeyableWindowInstaller.install(on: window)
 
             // Remove standard window controls
             window.standardWindowButton(.closeButton)?.isHidden = true
@@ -94,50 +91,11 @@ public struct WindowAccessor: NSViewRepresentable {
             }
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-            // Set fullscreen frame
-            updateWindowFrame(window)
-
             // Make key and bring to front on first configuration
             if isFirstConfiguration {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
-
-                // Observe frame changes to fight against SwiftUI's window resizing
-                setupFrameObserver(for: window)
-
-                // Re-apply frame multiple times during initialization to fight SwiftUI layout
-                for delay in [0.02, 0.05, 0.1, 0.2] {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                        self?.updateWindowFrame(window)
-                    }
-                }
             }
-        }
-
-        private func setupFrameObserver(for window: NSWindow) {
-            // Observe window frame changes and snap back to fullscreen.
-            // This fights against SwiftUI's .windowResizability(.contentSize).
-            // We use a debounce to avoid infinite loops.
-            frameObservation = window.observe(\.frame, options: [.new]) { [weak self] window, _ in
-                guard let self = self else { return }
-                guard let screen = window.screen ?? NSScreen.main else { return }
-
-                // Only correct if frame doesn't match screen
-                guard window.frame != screen.frame else { return }
-
-                // Debounce: don't correct more than once per 10ms to avoid loops
-                let now = Date()
-                guard now.timeIntervalSince(self.lastFrameCorrectionTime) > 0.01 else { return }
-
-                self.lastFrameCorrectionTime = now
-                self.updateWindowFrame(window)
-            }
-        }
-
-        private func updateWindowFrame(_ window: NSWindow) {
-            guard let screen = window.screen ?? NSScreen.main else { return }
-            guard window.frame != screen.frame else { return }
-            window.setFrame(screen.frame, display: true, animate: false)
         }
 
         private func setupAppActivationObservers() {
@@ -222,48 +180,5 @@ private class WindowObservingView: NSView {
                 self?.tryConfigureWindow()
             }
         }
-    }
-}
-
-// MARK: - Keyable Window
-
-/// Makes a borderless NSWindow accept key status so TextFields can receive focus.
-///
-/// Borderless windows (`styleMask` without `.titled`) return `false` from
-/// `canBecomeKey` by default. This helper replaces the window's class at runtime
-/// with a subclass that overrides `canBecomeKey` to return `true`.
-enum KeyableWindowInstaller {
-    private static var installedClasses: [String: AnyClass] = [:]
-
-    static func install(on window: NSWindow) {
-        let originalClass: AnyClass = type(of: window)
-        let className = NSStringFromClass(originalClass)
-        let subclassName = "Airlock_Keyable_\(className)"
-
-        if let existing = installedClasses[subclassName] {
-            object_setClass(window, existing)
-            return
-        }
-
-        guard let subclass = objc_allocateClassPair(originalClass, subclassName, 0) else {
-            return
-        }
-
-        let trueBlock: @convention(block) (AnyObject) -> Bool = { _ in true }
-        let trueIMP = imp_implementationWithBlock(trueBlock)
-
-        // Override canBecomeKey to return true
-        if let m = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeKey)) {
-            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeKey), trueIMP, method_getTypeEncoding(m))
-        }
-
-        // Override canBecomeMain to return true
-        if let m = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeMain)) {
-            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeMain), trueIMP, method_getTypeEncoding(m))
-        }
-
-        objc_registerClassPair(subclass)
-        installedClasses[subclassName] = subclass
-        object_setClass(window, subclass)
     }
 }
