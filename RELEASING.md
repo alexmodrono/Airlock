@@ -4,17 +4,17 @@ This repository is structured to be pushed directly as a standalone GitHub repos
 
 ## First Push
 
-If the GitHub repository does not exist yet, create `amodrono/Airlock` on GitHub first, then:
+If the GitHub repository does not exist yet, create `alexmodrono/Airlock` on GitHub first, then:
 
 ```bash
-git remote add origin git@github.com:amodrono/Airlock.git
+git remote add origin git@github.com:alexmodrono/Airlock.git
 git push -u origin main
 ```
 
 If you prefer HTTPS:
 
 ```bash
-git remote add origin https://github.com/amodrono/Airlock.git
+git remote add origin https://github.com/alexmodrono/Airlock.git
 git push -u origin main
 ```
 

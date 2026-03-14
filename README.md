@@ -24,7 +24,7 @@ Airlock is designed to be used outside this workspace. The package itself is pro
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/amodrono/Airlock.git", from: "1.0.0")
+    .package(url: "https://github.com/alexmodrono/Airlock.git", from: "1.0.0")
 ]
 ```
 
