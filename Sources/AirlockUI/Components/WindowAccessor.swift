@@ -46,6 +46,7 @@ public struct WindowAccessor: NSViewRepresentable {
         private var observers: [NSObjectProtocol] = []
         private var isSystemSettingsActive = false
         private var configurationCount = 0
+        private var pendingConfigurationWorkItem: DispatchWorkItem?
 
         /// Window level high enough to cover the menu bar but below screen saver.
         /// .mainMenu (level 24) is just above the menu bar.
@@ -57,6 +58,7 @@ public struct WindowAccessor: NSViewRepresentable {
         }
 
         deinit {
+            pendingConfigurationWorkItem?.cancel()
             observers.forEach { NotificationCenter.default.removeObserver($0) }
         }
 
@@ -65,17 +67,38 @@ public struct WindowAccessor: NSViewRepresentable {
             configurationCount += 1
             let isFirstConfiguration = configurationCount == 1
 
-            // Preserve the existing titled host window. Replacing AppKit's
-            // title-bar window frame during SwiftUI's initial layout can
-            // deallocate NSThemeFrame mid-transaction on macOS, which crashes
-            // when AppKit asks the old frame for maskView.
-            var styleMask = window.styleMask
-            styleMask.insert(.fullSizeContentView)
-            window.styleMask = styleMask
+            scheduleOverlayConfiguration(for: window, isFirstConfiguration: isFirstConfiguration)
+        }
+
+        private func scheduleOverlayConfiguration(for window: NSWindow, isFirstConfiguration: Bool) {
+            pendingConfigurationWorkItem?.cancel()
+
+            let workItem = DispatchWorkItem { [weak self, weak window] in
+                guard let self, let window else { return }
+                self.applyOverlayConfiguration(to: window, isFirstConfiguration: isFirstConfiguration)
+            }
+
+            pendingConfigurationWorkItem = workItem
+            DispatchQueue.main.async(execute: workItem)
+        }
+
+        private func applyOverlayConfiguration(to window: NSWindow, isFirstConfiguration: Bool) {
+            guard managedWindow === window else { return }
+
+            // Defer the borderless transition until after the hosting window is
+            // attached and AppKit's initial layout transaction has completed.
+            // Swapping out NSThemeFrame during that transaction can crash when
+            // AppKit later asks the deallocated frame for maskView.
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
+            window.styleMask = [.borderless, .fullSizeContentView]
+
+            // Borderless windows return false from canBecomeKey by default,
+            // which prevents TextFields from accepting focus. Subclass the
+            // window at runtime to override this.
+            KeyableWindowInstaller.install(on: window)
 
             // Remove standard window controls
             window.standardWindowButton(.closeButton)?.isHidden = true
@@ -90,12 +113,18 @@ public struct WindowAccessor: NSViewRepresentable {
                 window.level = Self.overlayLevel
             }
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            updateWindowFrame(window)
 
-            // Make key and bring to front on first configuration
             if isFirstConfiguration {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
             }
+        }
+
+        private func updateWindowFrame(_ window: NSWindow) {
+            guard let screen = window.screen ?? NSScreen.main else { return }
+            guard window.frame != screen.frame else { return }
+            window.setFrame(screen.frame, display: true, animate: false)
         }
 
         private func setupAppActivationObservers() {
@@ -143,6 +172,7 @@ public struct WindowAccessor: NSViewRepresentable {
             guard let window = managedWindow else { return }
             isSystemSettingsActive = false
             window.level = Self.overlayLevel
+            updateWindowFrame(window)
             window.makeKeyAndOrderFront(nil)
         }
     }
@@ -180,5 +210,46 @@ private class WindowObservingView: NSView {
                 self?.tryConfigureWindow()
             }
         }
+    }
+}
+
+// MARK: - Keyable Window
+
+/// Makes a borderless NSWindow accept key status so TextFields can receive focus.
+///
+/// Borderless windows (`styleMask` without `.titled`) return `false` from
+/// `canBecomeKey` by default. This helper replaces the window's class at runtime
+/// with a subclass that overrides `canBecomeKey` to return `true`.
+enum KeyableWindowInstaller {
+    private static var installedClasses: [String: AnyClass] = [:]
+
+    static func install(on window: NSWindow) {
+        let originalClass: AnyClass = type(of: window)
+        let className = NSStringFromClass(originalClass)
+        let subclassName = "Airlock_Keyable_\(className)"
+
+        if let existing = installedClasses[subclassName] {
+            object_setClass(window, existing)
+            return
+        }
+
+        guard let subclass = objc_allocateClassPair(originalClass, subclassName, 0) else {
+            return
+        }
+
+        let trueBlock: @convention(block) (AnyObject) -> Bool = { _ in true }
+        let trueIMP = imp_implementationWithBlock(trueBlock)
+
+        if let method = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeKey)) {
+            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeKey), trueIMP, method_getTypeEncoding(method))
+        }
+
+        if let method = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeMain)) {
+            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeMain), trueIMP, method_getTypeEncoding(method))
+        }
+
+        objc_registerClassPair(subclass)
+        installedClasses[subclassName] = subclass
+        object_setClass(window, subclass)
     }
 }
