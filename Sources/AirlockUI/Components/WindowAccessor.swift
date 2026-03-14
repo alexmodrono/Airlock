@@ -96,34 +96,44 @@ public struct WindowAccessor: NSViewRepresentable {
         }
 
         /// Restore the managed window to its pre-Airlock state.
+        ///
+        /// The actual work is dispatched to the next run loop iteration because
+        /// this is typically called from `viewDidMoveToWindow(nil)` inside a
+        /// SwiftUI view-update transaction.  Changing the style mask (borderless
+        /// → titled) synchronously during that transaction causes AppKit to swap
+        /// its internal frame view mid-layout, leaving the window in a broken
+        /// state.
         func restoreWindow() {
             guard let window = managedWindow, let state = savedWindowState else { return }
             savedWindowState = nil
             managedWindow = nil
 
-            // Restore the original class first, before any property changes.
-            // This un-does the isa-swizzle so KVO observer deregistrations
-            // (triggered by style mask / content view changes) match the
-            // class under which they were originally registered.
-            let currentClass: AnyClass = type(of: window)
-            if currentClass !== state.originalClass {
-                object_setClass(window, state.originalClass)
+            DispatchQueue.main.async {
+                // Restore the original class first, before any property changes.
+                // This un-does the isa-swizzle so KVO observer deregistrations
+                // (triggered by style mask / content view changes) match the
+                // class under which they were originally registered.
+                let currentClass: AnyClass = type(of: window)
+                if currentClass !== state.originalClass {
+                    object_setClass(window, state.originalClass)
+                }
+
+                window.styleMask = state.styleMask
+                window.titlebarAppearsTransparent = state.titlebarAppearsTransparent
+                window.titleVisibility = state.titleVisibility
+                window.isOpaque = state.isOpaque
+                window.backgroundColor = state.backgroundColor
+                window.hasShadow = state.hasShadow
+                window.level = state.level
+                window.collectionBehavior = state.collectionBehavior
+
+                window.standardWindowButton(.closeButton)?.isHidden = state.closeButtonHidden
+                window.standardWindowButton(.miniaturizeButton)?.isHidden = state.miniaturizeButtonHidden
+                window.standardWindowButton(.zoomButton)?.isHidden = state.zoomButtonHidden
+
+                window.setFrame(state.frame, display: true, animate: false)
+                window.makeKeyAndOrderFront(nil)
             }
-
-            window.styleMask = state.styleMask
-            window.titlebarAppearsTransparent = state.titlebarAppearsTransparent
-            window.titleVisibility = state.titleVisibility
-            window.isOpaque = state.isOpaque
-            window.backgroundColor = state.backgroundColor
-            window.hasShadow = state.hasShadow
-            window.level = state.level
-            window.collectionBehavior = state.collectionBehavior
-
-            window.standardWindowButton(.closeButton)?.isHidden = state.closeButtonHidden
-            window.standardWindowButton(.miniaturizeButton)?.isHidden = state.miniaturizeButtonHidden
-            window.standardWindowButton(.zoomButton)?.isHidden = state.zoomButtonHidden
-
-            window.setFrame(state.frame, display: true, animate: false)
         }
 
         private func scheduleOverlayConfiguration(for window: NSWindow, isFirstConfiguration: Bool) {
