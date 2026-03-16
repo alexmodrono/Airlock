@@ -238,6 +238,7 @@ struct VideoPreviewView: View {
     let url: URL
 
     @State private var player: AVPlayer?
+    @State private var loopObserver: NSObjectProtocol?
 
     var body: some View {
         ZStack {
@@ -257,6 +258,10 @@ struct VideoPreviewView: View {
             setupPlayer()
         }
         .onDisappear {
+            if let observer = loopObserver {
+                NotificationCenter.default.removeObserver(observer)
+                loopObserver = nil
+            }
             player?.pause()
             player = nil
         }
@@ -268,13 +273,13 @@ struct VideoPreviewView: View {
         avPlayer.play()
 
         // Loop the video
-        NotificationCenter.default.addObserver(
+        loopObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: avPlayer.currentItem,
             queue: .main
-        ) { _ in
-            avPlayer.seek(to: .zero)
-            avPlayer.play()
+        ) { [weak avPlayer] _ in
+            avPlayer?.seek(to: .zero)
+            avPlayer?.play()
         }
 
         player = avPlayer
