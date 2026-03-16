@@ -13,14 +13,13 @@ private let allowedOverlayApps: Set<String> = [
 
 /// A view that provides access to the underlying NSWindow for customization.
 ///
-/// Instead of mutating the host window's style mask (which crashes SwiftUI's
-/// KVO observers), this view creates a **new** borderless overlay window and
-/// reparents the host window's content view into it.  The overlay window is
-/// born borderless — no style-mask transition ever happens, so there is no
-/// frame-view reconstruction and no crash.
+/// Creates a **separate** borderless overlay window and moves the host window's
+/// content into it.  The overlay is created borderless from birth — no
+/// style-mask transition ever occurs, so NSHostingView's KVO observers are
+/// never disrupted.
 ///
-/// When the view is removed from the hierarchy the overlay window is closed
-/// and the original window is restored.
+/// When the view is removed from the hierarchy, the content is moved back to
+/// the original window and the overlay is closed.
 ///
 /// Use this in custom intro views to ensure proper window configuration:
 /// ```swift
@@ -55,8 +54,7 @@ public struct WindowAccessor: NSViewRepresentable {
         private var hostContentView: NSView?
         private var observers: [NSObjectProtocol] = []
         private var isSystemSettingsActive = false
-        private var configurationCount = 0
-        private var pendingConfigurationWorkItem: DispatchWorkItem?
+        private var pendingWork: DispatchWorkItem?
 
         /// Window level high enough to cover the menu bar but below screen saver.
         private static let overlayLevel = NSWindow.Level(
@@ -69,71 +67,67 @@ public struct WindowAccessor: NSViewRepresentable {
         }
 
         deinit {
-            pendingConfigurationWorkItem?.cancel()
+            pendingWork?.cancel()
             observers.forEach { NotificationCenter.default.removeObserver($0) }
-            restoreWindow()
+            restoreWindowImmediately()
         }
 
         func configure(window: NSWindow) {
+            // If we already have an overlay for this window, don't reconfigure.
+            guard overlayWindow == nil else { return }
             hostWindow = window
-            configurationCount += 1
-            let isFirst = configurationCount == 1
 
-            pendingConfigurationWorkItem?.cancel()
+            // Defer the content-view transfer so SwiftUI has time to finish
+            // registering KVO observers on the NSHostingView.  Moving the
+            // content view on the very first run-loop iteration after window
+            // creation crashes because the observers aren't registered yet.
+            pendingWork?.cancel()
             let work = DispatchWorkItem { [weak self, weak window] in
-                guard let self, let window else { return }
-                self.applyOverlay(to: window, isFirstConfiguration: isFirst)
+                guard let self, let window, self.hostWindow === window else { return }
+                self.transferToOverlay(from: window)
             }
-            pendingConfigurationWorkItem = work
-            DispatchQueue.main.async(execute: work)
+            pendingWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
         }
 
         func restoreWindow() {
+            pendingWork?.cancel()
+            pendingWork = nil
+
             guard let overlay = overlayWindow else { return }
             let host = hostWindow
-            let contentView = hostContentView
+            let content = hostContentView
 
             overlayWindow = nil
             hostWindow = nil
             hostContentView = nil
 
-            DispatchQueue.main.async {
-                // Move the content view back to the host window.
-                if let host, let contentView {
-                    host.contentView = contentView
-                    host.makeKeyAndOrderFront(nil)
-                }
-
-                overlay.orderOut(nil)
+            // Move the content view back synchronously so it's in the host
+            // window BEFORE SwiftUI tears down the view hierarchy.
+            if let host, let content {
+                host.contentView = content
+                host.makeKeyAndOrderFront(nil)
             }
+            overlay.orderOut(nil)
         }
 
-        // MARK: - Overlay Setup
+        // MARK: - Overlay Lifecycle
 
-        private func applyOverlay(to window: NSWindow, isFirstConfiguration: Bool) {
-            guard hostWindow === window else { return }
+        private func transferToOverlay(from window: NSWindow) {
             guard overlayWindow == nil else { return }
-
             guard let screen = window.screen ?? NSScreen.main else { return }
 
-            // Steal the content view from the host window.  The content view
-            // is an NSHostingView managed by SwiftUI.  Moving it between
-            // windows of the SAME style doesn't trigger the KVO crash; the
-            // crash only happens when the frame-view class changes (titled ↔
-            // borderless).  Here the host is titled and stays titled — we just
-            // set its content view to nil.  The hosting view is then placed
-            // into a window that was BORN borderless, so there is no
-            // frame-view reconstruction.
-            let contentView = window.contentView
+            // Grab the content view.  At this point SwiftUI has completed
+            // its initial layout and KVO registration, so removing the
+            // content view from the host window is safe.
+            guard let contentView = window.contentView else { return }
             hostContentView = contentView
-            window.contentView = nil
 
-            // Hide the (now-empty) host window so it doesn't flash behind
-            // the overlay.
+            // Detach from the host and hide it.
+            window.contentView = nil
             window.orderOut(nil)
 
-            // Create a new borderless overlay window.  Because it is
-            // borderless from creation, no style-mask transition ever occurs.
+            // Create a borderless overlay — born borderless, no transition.
             let overlay = AirlockOverlayWindow(screen: screen)
             overlay.contentView = contentView
 
@@ -145,6 +139,21 @@ public struct WindowAccessor: NSViewRepresentable {
             NSApp.activate(ignoringOtherApps: true)
 
             overlayWindow = overlay
+        }
+
+        /// Synchronous restore used from deinit.
+        private func restoreWindowImmediately() {
+            guard let overlay = overlayWindow,
+                  let host = hostWindow,
+                  let content = hostContentView else { return }
+
+            overlayWindow = nil
+            hostWindow = nil
+            hostContentView = nil
+
+            host.contentView = content
+            host.makeKeyAndOrderFront(nil)
+            overlay.orderOut(nil)
         }
 
         // MARK: - System Settings Passthrough
@@ -199,7 +208,7 @@ public struct WindowAccessor: NSViewRepresentable {
 /// A borderless, transparent, key-capable NSWindow used as the Airlock overlay.
 ///
 /// Created borderless from the start so there is never a titled → borderless
-/// style-mask transition (which would crash NSHostingView's KVO observers).
+/// style-mask transition.
 final class AirlockOverlayWindow: NSWindow {
     init(screen: NSScreen) {
         super.init(
@@ -214,15 +223,13 @@ final class AirlockOverlayWindow: NSWindow {
         isReleasedWhenClosed = false
     }
 
-    // Borderless windows return false by default — override so
-    // TextFields and other controls can receive focus.
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
 
 // MARK: - Window Observing View
 
-/// A custom NSView that observes when it's attached to a window and notifies via callback.
+/// A custom NSView that observes when it's attached to/detached from a window.
 private class WindowObservingView: NSView {
     var onWindowAttached: ((NSWindow) -> Void)?
     var onWindowDetached: (() -> Void)?
