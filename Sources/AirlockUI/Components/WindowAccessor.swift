@@ -118,7 +118,7 @@ public struct WindowAccessor: NSViewRepresentable {
                     object_setClass(window, state.originalClass)
                 }
 
-                window.styleMask = state.styleMask
+                Self.safelySetStyleMask(state.styleMask, on: window)
                 window.titlebarAppearsTransparent = state.titlebarAppearsTransparent
                 window.titleVisibility = state.titleVisibility
                 window.isOpaque = state.isOpaque
@@ -170,15 +170,11 @@ public struct WindowAccessor: NSViewRepresentable {
                 )
             }
 
-            // Defer the borderless transition until after the hosting window is
-            // attached and AppKit's initial layout transaction has completed.
-            // Swapping out NSThemeFrame during that transaction can crash when
-            // AppKit later asks the deallocated frame for maskView.
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
-            window.styleMask = [.borderless, .fullSizeContentView]
+            Self.safelySetStyleMask([.borderless, .fullSizeContentView], on: window)
 
             // Borderless windows return false from canBecomeKey by default,
             // which prevents TextFields from accepting focus. Subclass the
@@ -204,6 +200,25 @@ public struct WindowAccessor: NSViewRepresentable {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
             }
+        }
+
+        /// Change the window's style mask without crashing SwiftUI's KVO observers.
+        ///
+        /// Changing the style mask (e.g. titled → borderless) causes AppKit to
+        /// reconstruct the window's internal frame view hierarchy.  If an
+        /// `NSHostingView` is attached as the content view, the reconstruction
+        /// triggers `viewWillMove(toWindow: nil)` which tries to remove KVO
+        /// observers that may not yet be registered (or were registered under a
+        /// different window class due to isa-swizzling), resulting in a crash.
+        ///
+        /// The workaround is to temporarily detach the content view before the
+        /// style mask change and re-attach it afterwards.
+        private static func safelySetStyleMask(_ mask: NSWindow.StyleMask, on window: NSWindow) {
+            guard window.styleMask != mask else { return }
+            let savedContentView = window.contentView
+            window.contentView = nil
+            window.styleMask = mask
+            window.contentView = savedContentView
         }
 
         private func updateWindowFrame(_ window: NSWindow) {
