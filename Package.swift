@@ -37,11 +37,18 @@ let package = Package(
             name: "AirlockCore",
             dependencies: []
         ),
+        // ObjC helpers for exception-safe AppKit interop
+        .target(
+            name: "AirlockObjC",
+            dependencies: [],
+            publicHeadersPath: "include"
+        ),
         // UI: SwiftUI views and components
         .target(
             name: "AirlockUI",
             dependencies: [
                 "AirlockCore",
+                "AirlockObjC",
                 .product(name: "Lottie", package: "lottie-spm")
             ],
             resources: [

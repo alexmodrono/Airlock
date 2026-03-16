@@ -3,6 +3,7 @@
 
 import SwiftUI
 import AppKit
+import AirlockObjC
 
 /// Bundle identifiers for apps that should be allowed to appear above the onboarding overlay.
 private let allowedOverlayApps: Set<String> = [
@@ -98,21 +99,14 @@ public struct WindowAccessor: NSViewRepresentable {
         ///
         /// The actual work is dispatched to the next run loop iteration because
         /// this is typically called from `viewDidMoveToWindow(nil)` inside a
-        /// SwiftUI view-update transaction.  Changing the style mask (borderless
-        /// → titled) synchronously during that transaction causes AppKit to swap
-        /// its internal frame view mid-layout, leaving the window in a broken
-        /// state.
+        /// SwiftUI view-update transaction.
         func restoreWindow() {
             guard let window = managedWindow, let state = savedWindowState else { return }
             savedWindowState = nil
             managedWindow = nil
 
             DispatchQueue.main.async {
-                // Restore the style mask by toggling individual flags rather
-                // than replacing the whole mask.  This avoids the
-                // titled↔borderless transition that reconstructs the frame
-                // view and crashes NSHostingView's KVO observers.
-                Self.reconcileStyleMask(to: state.styleMask, on: window)
+                Self.safelySetStyleMask(state.styleMask, on: window)
 
                 window.titlebarAppearsTransparent = state.titlebarAppearsTransparent
                 window.titleVisibility = state.titleVisibility
@@ -164,27 +158,16 @@ public struct WindowAccessor: NSViewRepresentable {
                 )
             }
 
-            // Make the window visually borderless WITHOUT switching the style
-            // mask to .borderless.  Changing from .titled to .borderless (or
-            // back) causes AppKit to reconstruct the window's internal frame
-            // view.  If an NSHostingView is the content view, the
-            // reconstruction triggers viewWillMove(toWindow: nil) which tries
-            // to remove KVO observers that SwiftUI hasn't fully registered yet,
-            // resulting in a crash.  Keeping .titled and using visual
-            // properties achieves the same look without the frame-view swap.
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
+            Self.safelySetStyleMask([.borderless, .fullSizeContentView], on: window)
 
-            // Ensure content extends behind the (now-invisible) title bar.
-            if !window.styleMask.contains(.fullSizeContentView) {
-                window.styleMask.insert(.fullSizeContentView)
-            }
-
-            // Titled windows already return true from canBecomeKey/canBecomeMain,
-            // so there is no need for the isa-swizzle that borderless windows
-            // required.
+            // Borderless windows return false from canBecomeKey by default,
+            // which prevents TextFields from accepting focus. Subclass the
+            // window at runtime to override this.
+            KeyableWindowInstaller.install(on: window)
 
             // Remove standard window controls
             window.standardWindowButton(.closeButton)?.isHidden = true
@@ -207,31 +190,23 @@ public struct WindowAccessor: NSViewRepresentable {
             }
         }
 
-        /// Reconcile the window's style mask to a target value by toggling
-        /// individual flags (insert / remove) rather than assigning a whole new
-        /// mask.  This avoids the `.titled` ↔ `.borderless` transition that
-        /// causes AppKit to reconstruct the frame view and crash
-        /// NSHostingView's KVO observers.
-        private static func reconcileStyleMask(to target: NSWindow.StyleMask, on window: NSWindow) {
-            let current = window.styleMask
-            guard current != target else { return }
+        /// Change the window's style mask, catching the NSException that
+        /// AppKit throws when NSHostingView's KVO observers are torn down
+        /// during the frame-view reconstruction (titled ↔ borderless).
+        ///
+        /// After catching, the content view is re-attached so SwiftUI can
+        /// re-register its KVO observers on the new frame view.
+        private static func safelySetStyleMask(_ mask: NSWindow.StyleMask, on window: NSWindow) {
+            guard window.styleMask != mask else { return }
 
-            // Flags we can safely toggle without a frame-view class change.
-            let safeFlags: [NSWindow.StyleMask] = [
-                .fullSizeContentView, .closable, .miniaturizable, .resizable,
-                .unifiedTitleAndToolbar, .fullScreen, .utilityWindow,
-                .nonactivatingPanel, .hudWindow
-            ]
+            var contentView: NSView?
+            let succeeded = AirlockSetWindowStyleMask(window, mask.rawValue, &contentView)
 
-            for flag in safeFlags {
-                if target.contains(flag) && !current.contains(flag) {
-                    window.styleMask.insert(flag)
-                } else if !target.contains(flag) && current.contains(flag) {
-                    window.styleMask.remove(flag)
-                }
+            if !succeeded, let contentView {
+                // The exception interrupted the content-view transfer.
+                // Re-attach it so SwiftUI can re-register its observers.
+                window.contentView = contentView
             }
-            // Deliberately skip .titled / .borderless — toggling those
-            // reconstructs the frame view and crashes NSHostingView.
         }
 
         private func updateWindowFrame(_ window: NSWindow) {
@@ -333,3 +308,43 @@ private class WindowObservingView: NSView {
     }
 }
 
+// MARK: - Keyable Window
+
+/// Makes a borderless NSWindow accept key status so TextFields can receive focus.
+///
+/// Borderless windows (`styleMask` without `.titled`) return `false` from
+/// `canBecomeKey` by default. This helper replaces the window's class at runtime
+/// with a subclass that overrides `canBecomeKey` to return `true`.
+enum KeyableWindowInstaller {
+    private static var installedClasses: [String: AnyClass] = [:]
+
+    static func install(on window: NSWindow) {
+        let originalClass: AnyClass = type(of: window)
+        let className = NSStringFromClass(originalClass)
+        let subclassName = "Airlock_Keyable_\(className)"
+
+        if let existing = installedClasses[subclassName] {
+            object_setClass(window, existing)
+            return
+        }
+
+        guard let subclass = objc_allocateClassPair(originalClass, subclassName, 0) else {
+            return
+        }
+
+        let trueBlock: @convention(block) (AnyObject) -> Bool = { _ in true }
+        let trueIMP = imp_implementationWithBlock(trueBlock)
+
+        if let method = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeKey)) {
+            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeKey), trueIMP, method_getTypeEncoding(method))
+        }
+
+        if let method = class_getInstanceMethod(originalClass, #selector(getter: NSWindow.canBecomeMain)) {
+            class_addMethod(subclass, #selector(getter: NSWindow.canBecomeMain), trueIMP, method_getTypeEncoding(method))
+        }
+
+        objc_registerClassPair(subclass)
+        installedClasses[subclassName] = subclass
+        object_setClass(window, subclass)
+    }
+}
