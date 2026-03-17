@@ -18,6 +18,12 @@ private let allowedOverlayApps: Set<String> = [
 /// style-mask transition ever occurs, so NSHostingView's KVO observers are
 /// never disrupted.
 ///
+/// When ``isImmersive`` is `true` (the default), the overlay covers the entire
+/// screen above the menu bar — the original Airlock behavior.  When set to
+/// `false`, the overlay shrinks to ``cardSize`` (plus shadow padding), drops
+/// to a normal window level, and behaves like a regular app window so users
+/// can Cmd-Tab, access the menu bar, and interact with other apps.
+///
 /// When the view is removed from the hierarchy, the content is moved back to
 /// the original window and the overlay is closed.
 ///
@@ -27,7 +33,16 @@ private let allowedOverlayApps: Set<String> = [
 ///     .background(WindowAccessor())
 /// ```
 public struct WindowAccessor: NSViewRepresentable {
-    public init() {}
+    var isImmersive: Bool
+    var cardSize: CGSize
+
+    /// Extra padding around the card to ensure shadows render without clipping.
+    private static let shadowPadding: CGFloat = 120
+
+    public init(isImmersive: Bool = true, cardSize: CGSize = CGSize(width: 820, height: 580)) {
+        self.isImmersive = isImmersive
+        self.cardSize = cardSize
+    }
 
     public func makeNSView(context: Context) -> NSView {
         let view = WindowObservingView()
@@ -40,7 +55,9 @@ public struct WindowAccessor: NSViewRepresentable {
         return view
     }
 
-    public func updateNSView(_ nsView: NSView, context: Context) {}
+    public func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.update(isImmersive: isImmersive, cardSize: cardSize)
+    }
 
     public func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -55,6 +72,11 @@ public struct WindowAccessor: NSViewRepresentable {
         private var observers: [NSObjectProtocol] = []
         private var isSystemSettingsActive = false
         private var pendingWork: DispatchWorkItem?
+
+        /// Current immersive state as communicated by the SwiftUI side.
+        private var currentlyImmersive = true
+        /// Card dimensions used when demoting to non-immersive.
+        private var cardSize = CGSize(width: 820, height: 580)
 
         /// Window level high enough to cover the menu bar but below screen saver.
         private static let overlayLevel = NSWindow.Level(
@@ -88,6 +110,23 @@ public struct WindowAccessor: NSViewRepresentable {
             }
             pendingWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        }
+
+        /// Called from `updateNSView` whenever the SwiftUI parameters change.
+        func update(isImmersive: Bool, cardSize: CGSize) {
+            self.cardSize = cardSize
+
+            let wasImmersive = currentlyImmersive
+            currentlyImmersive = isImmersive
+
+            guard let overlay = overlayWindow else { return }
+            guard wasImmersive != isImmersive else { return }
+
+            if isImmersive {
+                promoteToImmersive(overlay)
+            } else {
+                demoteToWindowed(overlay)
+            }
         }
 
         func restoreWindow() {
@@ -131,10 +170,21 @@ public struct WindowAccessor: NSViewRepresentable {
             let overlay = AirlockOverlayWindow(screen: screen)
             overlay.contentView = contentView
 
-            if !isSystemSettingsActive {
-                overlay.level = Self.overlayLevel
+            if currentlyImmersive {
+                // Fullscreen immersive mode.
+                if !isSystemSettingsActive {
+                    overlay.level = Self.overlayLevel
+                }
+                overlay.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            } else {
+                // Card-sized windowed mode (intro was already skipped or disabled).
+                let frame = windowedFrame(on: screen)
+                overlay.setFrame(frame, display: false)
+                overlay.level = .normal
+                overlay.collectionBehavior = [.fullScreenAuxiliary]
+                overlay.hasShadow = true
             }
-            overlay.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
             overlay.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
 
@@ -154,6 +204,49 @@ public struct WindowAccessor: NSViewRepresentable {
             host.contentView = content
             host.makeKeyAndOrderFront(nil)
             overlay.orderOut(nil)
+        }
+
+        // MARK: - Immersive ↔ Windowed Transitions
+
+        /// Transition from windowed card to fullscreen overlay.
+        private func promoteToImmersive(_ overlay: AirlockOverlayWindow) {
+            guard let screen = overlay.screen ?? NSScreen.main else { return }
+            overlay.hasShadow = false
+            overlay.level = Self.overlayLevel
+            overlay.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.4
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                overlay.animator().setFrame(screen.frame, display: true)
+            }
+        }
+
+        /// Transition from fullscreen overlay to a normal card-sized window.
+        private func demoteToWindowed(_ overlay: AirlockOverlayWindow) {
+            guard let screen = overlay.screen ?? NSScreen.main else { return }
+            let target = windowedFrame(on: screen)
+
+            // Drop level first so the desktop becomes visible behind the card.
+            overlay.level = .normal
+            overlay.collectionBehavior = [.fullScreenAuxiliary]
+
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.5
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                overlay.animator().setFrame(target, display: true)
+            } completionHandler: {
+                overlay.hasShadow = true
+            }
+        }
+
+        /// Computes the centered card frame including shadow padding.
+        private func windowedFrame(on screen: NSScreen) -> NSRect {
+            let padding = WindowAccessor.shadowPadding
+            let w = cardSize.width + padding * 2
+            let h = cardSize.height + padding * 2
+            let x = screen.frame.midX - w / 2
+            let y = screen.frame.midY - h / 2
+            return NSRect(x: x, y: y, width: w, height: h)
         }
 
         // MARK: - System Settings Passthrough
@@ -192,6 +285,10 @@ public struct WindowAccessor: NSViewRepresentable {
 
         private func restoreWindowLevel() {
             guard let overlay = overlayWindow else { return }
+
+            // Only re-elevate if we are still in immersive mode.
+            guard currentlyImmersive else { return }
+
             isSystemSettingsActive = false
             overlay.level = Self.overlayLevel
 

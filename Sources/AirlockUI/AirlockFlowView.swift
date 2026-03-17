@@ -37,6 +37,14 @@ public struct AirlockConfiguration {
     /// If nil, dismissing will call navigator.complete() as usual.
     public var onDismiss: (() -> Void)?
 
+    /// When `true`, the fullscreen immersive overlay is only shown during the
+    /// intro animation.  After the intro completes the window shrinks to card
+    /// size and behaves like a normal app window — users can Cmd-Tab, access the
+    /// menu bar, and use other apps alongside the onboarding flow.
+    ///
+    /// Defaults to `false` to preserve the original fullscreen behavior.
+    public var immersiveIntroOnly: Bool
+
     /// Creates a configuration with default values.
     public init(
         introView: AnyView? = nil,
@@ -48,7 +56,8 @@ public struct AirlockConfiguration {
         cardWidth: CGFloat = 820,
         cardHeight: CGFloat = 580,
         sidebarWidth: CGFloat = 280,
-        onDismiss: (() -> Void)? = nil
+        onDismiss: (() -> Void)? = nil,
+        immersiveIntroOnly: Bool = false
     ) {
         self.introView = introView
         self.showIntro = showIntro
@@ -60,6 +69,7 @@ public struct AirlockConfiguration {
         self.cardHeight = cardHeight
         self.sidebarWidth = sidebarWidth
         self.onDismiss = onDismiss
+        self.immersiveIntroOnly = immersiveIntroOnly
     }
 
     /// Default configuration.
@@ -115,28 +125,38 @@ public struct AirlockFlowView: View {
         self.configuration = configuration
     }
 
+    /// Whether the overlay should currently be in immersive (fullscreen) mode.
+    private var isImmersive: Bool {
+        !(configuration.immersiveIntroOnly && introComplete)
+    }
+
     public var body: some View {
         ZStack {
-            // Fullscreen blurred and dimmed overlay
-            VisualEffectBlur(material: .fullScreenUI, blendingMode: .behindWindow)
-                .ignoresSafeArea()
-                .overlay(
-                    Color.black.opacity(colorScheme == .dark ? 0.5 : 0.3)
-                )
-                .opacity(overlayOpacity)
+            // Fullscreen blurred and dimmed overlay (hidden once demoted)
+            if isImmersive {
+                VisualEffectBlur(material: .fullScreenUI, blendingMode: .behindWindow)
+                    .ignoresSafeArea()
+                    .overlay(
+                        Color.black.opacity(colorScheme == .dark ? 0.5 : 0.3)
+                    )
+                    .opacity(overlayOpacity)
+                    .transition(.opacity)
+            }
 
             // Main content
             VStack {
-                // Exit button in top-right corner (only show after intro)
-                HStack {
-                    Spacer()
-                    ExitButton {
-                        dismissWithAnimation()
+                // Exit button in top-right corner (only show after intro, immersive only)
+                if isImmersive {
+                    HStack {
+                        Spacer()
+                        ExitButton {
+                            dismissWithAnimation()
+                        }
                     }
+                    .padding(.trailing, 40)
+                    .padding(.top, 40)
+                    .opacity(introComplete ? cardOpacity : 0)
                 }
-                .padding(.trailing, 40)
-                .padding(.top, 40)
-                .opacity(introComplete ? cardOpacity : 0)
 
                 Spacer()
 
@@ -147,6 +167,17 @@ public struct AirlockFlowView: View {
                     introComplete: $introComplete,
                     animationController: animationController
                 )
+                .overlay(alignment: .topTrailing) {
+                    // Close button pinned to the card in windowed mode
+                    if !isImmersive && introComplete {
+                        ExitButton {
+                            dismissWithAnimation()
+                        }
+                        .padding(.trailing, 12)
+                        .padding(.top, 12)
+                        .transition(.opacity)
+                    }
+                }
                 .scaleEffect(cardScale)
                 .opacity(cardOpacity)
 
@@ -164,7 +195,15 @@ public struct AirlockFlowView: View {
             .animation(skipHintAnimation, value: showSkipHint)
             .animation(introStateAnimation, value: introComplete)
         }
-        .background(WindowAccessor())
+        .background(
+            WindowAccessor(
+                isImmersive: isImmersive,
+                cardSize: CGSize(
+                    width: configuration.cardWidth,
+                    height: configuration.cardHeight
+                )
+            )
+        )
         .onAppear {
             handleAppear()
         }
