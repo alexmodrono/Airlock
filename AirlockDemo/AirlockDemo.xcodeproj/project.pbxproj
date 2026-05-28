@@ -122,7 +122,7 @@
 			);
 			mainGroup = A1000030229E0001;
 			packageReferences = (
-				0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */,
+				0692F9E22F65F8D100949A8D /* XCLocalSwiftPackageReference ".." */,
 			);
 			productRefGroup = A1000032229E0001 /* Products */;
 			projectDirPath = "";
@@ -359,36 +359,28 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/alexmodrono/Airlock";
-			requirement = {
-				branch = main;
-				kind = branch;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		0692F9E22F65F8D100949A8D /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		0692F9E32F65F8D100949A8D /* Airlock */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */;
 			productName = Airlock;
 		};
 		0692F9E52F65F8D100949A8D /* AirlockChecks */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */;
 			productName = AirlockChecks;
 		};
 		0692F9E72F65F8D100949A8D /* AirlockCore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */;
 			productName = AirlockCore;
 		};
 		0692F9E92F65F8D100949A8D /* AirlockUI */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 0692F9E22F65F8D100949A8D /* XCRemoteSwiftPackageReference "Airlock" */;
 			productName = AirlockUI;
 		};
 /* End XCSwiftPackageProductDependency section */

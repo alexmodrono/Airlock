@@ -1,15 +1,6 @@
 {
-  "originHash" : "a6bc71e4a6653f0f208fadd491d18b7d9af973e30a9e954fa6490769e931b244",
+  "originHash" : "06d391e35086b0b974a9f0a695fadd8e2bd8445050be9ad1e1ddb7af1b84a9c7",
   "pins" : [
-    {
-      "identity" : "airlock",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/alexmodrono/Airlock",
-      "state" : {
-        "branch" : "main",
-        "revision" : "7226be7b9b2640f42d353981556aeb8529cd77ea"
-      }
-    },
     {
       "identity" : "lottie-spm",
       "kind" : "remoteSourceControl",
