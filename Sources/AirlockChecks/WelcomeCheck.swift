@@ -45,6 +45,7 @@ public final class WelcomeCheck: FlightCheck, ObservableObject {
     private let features: [Feature]
     private let highlightFeatures: [HighlightFeature]
     private let autoAdvanceDuration: UInt64
+    private var autoAdvanceStarted = false
 
     /// A feature to display in the welcome screen.
     public struct Feature: Identifiable {
@@ -143,32 +144,32 @@ public final class WelcomeCheck: FlightCheck, ObservableObject {
     }
 
     public func performAction() {
+        status = .success
+    }
+
+    /// Starts the auto-advance countdown if configured. Idempotent.
+    ///
+    /// Called when the welcome screen appears so the countdown is tied to the
+    /// view lifecycle rather than to a blocking `validate()` call.
+    @MainActor
+    public func beginAutoAdvanceIfNeeded() {
+        guard autoAdvanceDuration > 0, !autoAdvanceStarted else { return }
+        autoAdvanceStarted = true
+
         Task { @MainActor in
-            status = .success
+            try? await Task.sleep(nanoseconds: autoAdvanceDuration)
+            guard !Task.isCancelled else { return }
+            if status != .success {
+                status = .success
+            }
         }
     }
 
     @MainActor
     public func validate() async -> Bool {
-        // If auto-advance is enabled, wait but allow early exit via Continue button
-        if autoAdvanceDuration > 0 {
-            let checkInterval: UInt64 = 100_000_000 // Check every 100ms
-            var elapsed: UInt64 = 0
-
-            while elapsed < autoAdvanceDuration {
-                // Check if user clicked Continue (which sets status to .success)
-                if status == .success {
-                    return true
-                }
-                try? await Task.sleep(nanoseconds: checkInterval)
-                elapsed += checkInterval
-            }
-            status = .success
-            return true
-        }
-        // If auto-advance is disabled (0), require user action
-        status = .active
-        return false
+        // Pure predicate: the welcome screen passes once it has been marked
+        // complete, either by the auto-advance countdown or the Continue button.
+        status == .success
     }
 
     // Internal accessors for the detail view
@@ -183,6 +184,7 @@ public final class WelcomeCheck: FlightCheck, ObservableObject {
 
 struct WelcomeCheckDetailView: View {
     @ObservedObject var check: WelcomeCheck
+    @Environment(\.airlockNavigator) private var navigator
 
     var body: some View {
         VStack(spacing: 24) {
@@ -227,10 +229,15 @@ struct WelcomeCheckDetailView: View {
                 .padding(.horizontal, 24)
             }
 
-            // Continue button
+            // Continue button. In the declarative flow a navigator is present,
+            // so this advances directly instead of leaving a second disabled
+            // Continue in the sidebar. In the FlightCheck flow there is no
+            // navigator, so it just marks the check complete and the manager
+            // advances focus.
             if check.status != .success {
                 Button {
                     check.performAction()
+                    navigator?.goToNext()
                 } label: {
                     HStack(spacing: 8) {
                         Text(check.actionLabel)
@@ -245,6 +252,9 @@ struct WelcomeCheckDetailView: View {
 
             Spacer()
                 .frame(height: 24)
+        }
+        .onAppear {
+            check.beginAutoAdvanceIfNeeded()
         }
     }
 }

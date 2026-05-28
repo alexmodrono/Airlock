@@ -112,6 +112,63 @@ public struct StartupAnimationView: View {
     }
 }
 
+// MARK: - Intro Rim Glow
+
+/// A subtle, transparent rainbow glow that sits just outside the card's edges.
+///
+/// Sized slightly larger than the card and blurred, so only a soft rim of color
+/// peeks out around the card border. Intended to be placed behind the card and
+/// shown only while the intro animation is playing.
+public struct AirlockIntroGlow: View {
+    private let cardWidth: CGFloat
+    private let cardHeight: CGFloat
+    private let cornerRadius: CGFloat
+    private let colors: [Color]
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var phase: CGFloat = 0
+
+    /// - Parameters:
+    ///   - cardWidth: Width of the card the glow surrounds.
+    ///   - cardHeight: Height of the card the glow surrounds.
+    ///   - cornerRadius: Corner radius matching the card (default: 20).
+    ///   - colors: Gradient colors (default: the Airlock rainbow).
+    public init(
+        cardWidth: CGFloat,
+        cardHeight: CGFloat,
+        cornerRadius: CGFloat = 20,
+        colors: [Color] = StartupAnimationView.defaultGlowColors
+    ) {
+        self.cardWidth = cardWidth
+        self.cardHeight = cardHeight
+        self.cornerRadius = cornerRadius
+        self.colors = colors
+    }
+
+    public var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius + 8, style: .continuous)
+            .fill(
+                AngularGradient(
+                    gradient: Gradient(colors: colors),
+                    center: .center,
+                    angle: .degrees(phase * 360)
+                )
+            )
+            // A touch larger than the card so only a rim shows once the opaque
+            // card is layered on top.
+            .frame(width: cardWidth + 34, height: cardHeight + 34)
+            .blur(radius: 30)
+            .opacity(0.5)
+            .allowsHitTesting(false)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.linear(duration: 9).repeatForever(autoreverses: false)) {
+                    phase = 1
+                }
+            }
+    }
+}
+
 // MARK: - Animated Glow Effect
 
 /// A view that displays an animated angular gradient glow.

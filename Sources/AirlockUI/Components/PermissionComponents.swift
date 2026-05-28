@@ -13,6 +13,13 @@ import EventKit
 import Photos
 import CoreLocation
 
+/// A single shared location manager for reading authorization status.
+///
+/// Creating a `CLLocationManager` per read (as the old code did inside computed
+/// properties hit during rendering) is wasteful; one shared instance is enough
+/// to query `authorizationStatus`.
+private let airlockLocationManager = CLLocationManager()
+
 // MARK: - Permission Grant State
 
 /// The current authorization state for a macOS permission.
@@ -249,7 +256,7 @@ public enum PermissionType: String, CaseIterable, Identifiable {
             )
 
         case .locationServices:
-            let status = CLLocationManager().authorizationStatus
+            let status = airlockLocationManager.authorizationStatus
             switch status {
             case .notDetermined:
                 return .inAppPrompt
@@ -388,7 +395,7 @@ public enum PermissionType: String, CaseIterable, Identifiable {
             )
 
         case .locationServices:
-            let status = CLLocationManager().authorizationStatus
+            let status = airlockLocationManager.authorizationStatus
             switch status {
             case .authorized, .authorizedAlways, .authorizedWhenInUse:
                 return .granted
@@ -581,7 +588,7 @@ private enum PermissionDetector {
                 return .granted
             } catch let error as NSError {
                 if error.domain == NSCocoaErrorDomain &&
-                    (error.code == NSFileReadNoPermissionError || error.code == 257) {
+                    error.code == NSFileReadNoPermissionError {
                     return .notGranted
                 }
             } catch {

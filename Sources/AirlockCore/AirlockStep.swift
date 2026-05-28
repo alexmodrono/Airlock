@@ -131,12 +131,16 @@ public struct AnyAirlockStep: Identifiable {
 /// Result builder for creating arrays of steps declaratively.
 @resultBuilder
 public struct AirlockStepBuilder {
-    public static func buildBlock(_ components: AnyAirlockStep...) -> [AnyAirlockStep] {
-        components
+    public static func buildBlock(_ components: [AnyAirlockStep]...) -> [AnyAirlockStep] {
+        components.flatMap { $0 }
     }
 
-    public static func buildExpression<Content: View>(_ expression: AirlockStep<Content>) -> AnyAirlockStep {
-        AnyAirlockStep(expression)
+    public static func buildExpression<Content: View>(_ expression: AirlockStep<Content>) -> [AnyAirlockStep] {
+        [AnyAirlockStep(expression)]
+    }
+
+    public static func buildExpression(_ expression: AnyAirlockStep) -> [AnyAirlockStep] {
+        [expression]
     }
 
     public static func buildOptional(_ component: [AnyAirlockStep]?) -> [AnyAirlockStep] {

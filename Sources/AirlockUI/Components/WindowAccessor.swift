@@ -4,59 +4,44 @@
 import SwiftUI
 import AppKit
 
-/// Bundle identifiers for apps that should be allowed to appear above the onboarding overlay.
-private let allowedOverlayApps: Set<String> = [
-    "com.apple.systempreferences",      // System Settings (macOS 13+)
-    "com.apple.SystemPreferences",      // System Preferences (older macOS)
-    "com.apple.Accessibility-Settings"  // Accessibility Settings panel
-]
-
-/// A view that provides access to the underlying NSWindow for customization.
+/// Configures the host window so the Airlock onboarding presents as a clean,
+/// borderless-looking card that floats above other windows.
 ///
-/// Creates a **separate** borderless overlay window and moves the host window's
-/// content into it.  The overlay is created borderless from birth — no
-/// style-mask transition ever occurs, so NSHostingView's KVO observers are
-/// never disrupted.
+/// This adjusts properties on the *existing* window only — it never creates a
+/// second window or moves the host's content view, which is what made the old
+/// implementation crash-prone. The original window properties are captured when
+/// the accessor attaches and restored when it detaches, so the window returns
+/// to normal for whatever the app shows after onboarding.
 ///
-/// When ``isImmersive`` is `true` (the default), the overlay covers the entire
-/// screen above the menu bar — the original Airlock behavior.  When set to
-/// `false`, the overlay shrinks to ``cardSize`` (plus shadow padding), drops
-/// to a normal window level, and behaves like a regular app window so users
-/// can Cmd-Tab, access the menu bar, and interact with other apps.
+/// The card's rounded corners and rainbow come from the SwiftUI content; the
+/// window is made transparent so those render cleanly with no opaque rectangle
+/// or square border behind them.
 ///
-/// When the view is removed from the hierarchy, the content is moved back to
-/// the original window and the overlay is closed.
-///
-/// Use this in custom intro views to ensure proper window configuration:
 /// ```swift
-/// MyCustomIntroView()
+/// MyOnboardingRoot()
 ///     .background(WindowAccessor())
 /// ```
 public struct WindowAccessor: NSViewRepresentable {
-    var isImmersive: Bool
-    var cardSize: CGSize
+    /// Whether the onboarding window should float above other apps' windows.
+    var floats: Bool
 
-    /// Extra padding around the card to ensure shadows render without clipping.
-    private static let shadowPadding: CGFloat = 120
-
-    public init(isImmersive: Bool = true, cardSize: CGSize = CGSize(width: 820, height: 580)) {
-        self.isImmersive = isImmersive
-        self.cardSize = cardSize
+    public init(floats: Bool = true) {
+        self.floats = floats
     }
 
     public func makeNSView(context: Context) -> NSView {
         let view = WindowObservingView()
-        view.onWindowAttached = { window in
-            context.coordinator.configure(window: window)
+        view.onWindowAttached = { [floats] window in
+            context.coordinator.configure(window: window, floats: floats)
         }
         view.onWindowDetached = {
-            context.coordinator.restoreWindow()
+            context.coordinator.restore()
         }
         return view
     }
 
     public func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.update(isImmersive: isImmersive, cardSize: cardSize)
+        context.coordinator.updateFloating(floats)
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -65,299 +50,145 @@ public struct WindowAccessor: NSViewRepresentable {
 
     // MARK: - Coordinator
 
-    public class Coordinator: NSObject {
-        private var overlayWindow: AirlockOverlayWindow?
-        private weak var hostWindow: NSWindow?
-        private var hostContentView: NSView?
-        private var observers: [NSObjectProtocol] = []
-        private var isSystemSettingsActive = false
-        private var pendingWork: DispatchWorkItem?
-
-        /// Current immersive state as communicated by the SwiftUI side.
-        private var currentlyImmersive = true
-        /// Card dimensions used when demoting to non-immersive.
-        private var cardSize = CGSize(width: 820, height: 580)
-
-        /// Window level high enough to cover the menu bar but below screen saver.
-        private static let overlayLevel = NSWindow.Level(
-            rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 1
-        )
-
-        override init() {
-            super.init()
-            setupAppActivationObservers()
-        }
+    public final class Coordinator: NSObject {
+        private weak var window: NSWindow?
+        private var original: WindowState?
+        private var floats = true
+        private var resizeObserver: NSObjectProtocol?
 
         deinit {
-            pendingWork?.cancel()
-            observers.forEach { NotificationCenter.default.removeObserver($0) }
-            restoreWindowImmediately()
-        }
-
-        func configure(window: NSWindow) {
-            // If we already have an overlay for this window, don't reconfigure.
-            guard overlayWindow == nil else { return }
-            hostWindow = window
-
-            // Defer the content-view transfer so SwiftUI has time to finish
-            // registering KVO observers on the NSHostingView.  Moving the
-            // content view on the very first run-loop iteration after window
-            // creation crashes because the observers aren't registered yet.
-            pendingWork?.cancel()
-            let work = DispatchWorkItem { [weak self, weak window] in
-                guard let self, let window, self.hostWindow === window else { return }
-                self.transferToOverlay(from: window)
-            }
-            pendingWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
-        }
-
-        /// Called from `updateNSView` whenever the SwiftUI parameters change.
-        func update(isImmersive: Bool, cardSize: CGSize) {
-            self.cardSize = cardSize
-
-            let wasImmersive = currentlyImmersive
-            currentlyImmersive = isImmersive
-
-            guard let overlay = overlayWindow else { return }
-            guard wasImmersive != isImmersive else { return }
-
-            if isImmersive {
-                promoteToImmersive(overlay)
-            } else {
-                demoteToWindowed(overlay)
+            if let resizeObserver {
+                NotificationCenter.default.removeObserver(resizeObserver)
             }
         }
 
-        func restoreWindow() {
-            pendingWork?.cancel()
-            pendingWork = nil
-
-            guard let overlay = overlayWindow else { return }
-            let host = hostWindow
-            let content = hostContentView
-
-            overlayWindow = nil
-            hostWindow = nil
-            hostContentView = nil
-
-            // Move the content view back synchronously so it's in the host
-            // window BEFORE SwiftUI tears down the view hierarchy.
-            if let host, let content {
-                host.contentView = content
-                host.makeKeyAndOrderFront(nil)
-            }
-            overlay.orderOut(nil)
+        /// The window properties we mutate, captured so we can put them back.
+        private struct WindowState {
+            let isOpaque: Bool
+            let backgroundColor: NSColor
+            let hasShadow: Bool
+            let level: NSWindow.Level
+            let isMovableByWindowBackground: Bool
+            let closeHidden: Bool
+            let miniaturizeHidden: Bool
+            let zoomHidden: Bool
         }
 
-        // MARK: - Overlay Lifecycle
+        func configure(window: NSWindow, floats: Bool) {
+            guard self.window !== window else {
+                updateFloating(floats)
+                return
+            }
+            self.window = window
+            self.floats = floats
 
-        private func transferToOverlay(from window: NSWindow) {
-            guard overlayWindow == nil else { return }
-            guard let screen = window.screen ?? NSScreen.main else { return }
+            original = WindowState(
+                isOpaque: window.isOpaque,
+                backgroundColor: window.backgroundColor,
+                hasShadow: window.hasShadow,
+                level: window.level,
+                isMovableByWindowBackground: window.isMovableByWindowBackground,
+                closeHidden: window.standardWindowButton(.closeButton)?.isHidden ?? false,
+                miniaturizeHidden: window.standardWindowButton(.miniaturizeButton)?.isHidden ?? false,
+                zoomHidden: window.standardWindowButton(.zoomButton)?.isHidden ?? false
+            )
 
-            // Grab the content view.  At this point SwiftUI has completed
-            // its initial layout and KVO registration, so removing the
-            // content view from the host window is safe.
-            guard let contentView = window.contentView else { return }
-            hostContentView = contentView
+            apply(to: window, floats: floats)
+        }
 
-            // Detach from the host and hide it.
-            window.contentView = nil
-            window.orderOut(nil)
+        private func apply(to window: NSWindow, floats: Bool) {
+            // Transparent window: the rounded card drawn in SwiftUI shows with
+            // clean corners, no opaque rectangle, no square border. The card
+            // draws its own shadow, so disable the window's to avoid doubling.
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
+            window.isMovableByWindowBackground = true
+            window.level = floats ? .floating : .normal
 
-            // Create a borderless overlay — born borderless, no transition.
-            let overlay = AirlockOverlayWindow(screen: screen)
-            overlay.contentView = contentView
+            // Hide the traffic-light buttons for an uninterrupted card look.
+            window.standardWindowButton(.closeButton)?.isHidden = true
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            window.standardWindowButton(.zoomButton)?.isHidden = true
 
-            if currentlyImmersive {
-                // Fullscreen immersive mode.
-                if !isSystemSettingsActive {
-                    overlay.level = Self.overlayLevel
+            // Center on screen. The window may still be sizing itself to its
+            // content, so re-center on the next resize so it lands dead-center
+            // regardless of when the final size is applied.
+            centerExactly(window)
+            if resizeObserver == nil {
+                resizeObserver = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didResizeNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self, weak window] _ in
+                    guard let window else { return }
+                    self?.centerExactly(window)
                 }
-                overlay.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            } else {
-                // Card-sized windowed mode (intro was already skipped or disabled).
-                let frame = windowedFrame(on: screen)
-                overlay.setFrame(frame, display: false)
-                overlay.level = .normal
-                overlay.collectionBehavior = [.fullScreenAuxiliary]
-                overlay.hasShadow = true
-            }
-
-            overlay.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-
-            overlayWindow = overlay
-        }
-
-        /// Synchronous restore used from deinit.
-        private func restoreWindowImmediately() {
-            guard let overlay = overlayWindow,
-                  let host = hostWindow,
-                  let content = hostContentView else { return }
-
-            overlayWindow = nil
-            hostWindow = nil
-            hostContentView = nil
-
-            host.contentView = content
-            host.makeKeyAndOrderFront(nil)
-            overlay.orderOut(nil)
-        }
-
-        // MARK: - Immersive ↔ Windowed Transitions
-
-        /// Transition from windowed card to fullscreen overlay.
-        private func promoteToImmersive(_ overlay: AirlockOverlayWindow) {
-            guard let screen = overlay.screen ?? NSScreen.main else { return }
-            overlay.hasShadow = false
-            overlay.level = Self.overlayLevel
-            overlay.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.4
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                overlay.animator().setFrame(screen.frame, display: true)
             }
         }
 
-        /// Transition from fullscreen overlay to a normal card-sized window.
-        private func demoteToWindowed(_ overlay: AirlockOverlayWindow) {
-            guard let screen = overlay.screen ?? NSScreen.main else { return }
-            let target = windowedFrame(on: screen)
-
-            // Drop level first so the desktop becomes visible behind the card.
-            overlay.level = .normal
-            overlay.collectionBehavior = [.fullScreenAuxiliary]
-
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.5
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                overlay.animator().setFrame(target, display: true)
-            } completionHandler: {
-                overlay.hasShadow = true
+        /// Places the window at the exact geometric center of its screen.
+        ///
+        /// `NSWindow.center()` intentionally sits slightly *above* center, so we
+        /// compute the midpoint ourselves.
+        private func centerExactly(_ window: NSWindow) {
+            guard let screen = window.screen ?? NSScreen.main else {
+                window.center()
+                return
             }
+            let screenFrame = screen.frame
+            let size = window.frame.size
+            let origin = NSPoint(
+                x: screenFrame.midX - size.width / 2,
+                y: screenFrame.midY - size.height / 2
+            )
+            window.setFrameOrigin(origin)
         }
 
-        /// Computes the centered card frame including shadow padding.
-        private func windowedFrame(on screen: NSScreen) -> NSRect {
-            let padding = WindowAccessor.shadowPadding
-            let w = cardSize.width + padding * 2
-            let h = cardSize.height + padding * 2
-            let x = screen.frame.midX - w / 2
-            let y = screen.frame.midY - h / 2
-            return NSRect(x: x, y: y, width: w, height: h)
+        func updateFloating(_ floats: Bool) {
+            self.floats = floats
+            window?.level = floats ? .floating : .normal
         }
 
-        // MARK: - System Settings Passthrough
-
-        private func setupAppActivationObservers() {
-            let activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-                forName: NSWorkspace.didActivateApplicationNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] notification in
-                self?.handleAppActivation(notification)
+        func restore() {
+            if let resizeObserver {
+                NotificationCenter.default.removeObserver(resizeObserver)
+                self.resizeObserver = nil
             }
-            observers.append(activationObserver)
 
-            let ourAppObserver = NotificationCenter.default.addObserver(
-                forName: NSApplication.didBecomeActiveNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                self?.restoreWindowLevel()
-            }
-            observers.append(ourAppObserver)
-        }
+            guard let window, let original else { return }
+            window.isOpaque = original.isOpaque
+            window.backgroundColor = original.backgroundColor
+            window.hasShadow = original.hasShadow
+            window.level = original.level
+            window.isMovableByWindowBackground = original.isMovableByWindowBackground
+            window.standardWindowButton(.closeButton)?.isHidden = original.closeHidden
+            window.standardWindowButton(.miniaturizeButton)?.isHidden = original.miniaturizeHidden
+            window.standardWindowButton(.zoomButton)?.isHidden = original.zoomHidden
 
-        private func handleAppActivation(_ notification: Notification) {
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  let bundleID = app.bundleIdentifier else { return }
-
-            if allowedOverlayApps.contains(bundleID) {
-                isSystemSettingsActive = true
-                overlayWindow?.level = .normal
-            } else {
-                isSystemSettingsActive = false
-            }
-        }
-
-        private func restoreWindowLevel() {
-            guard let overlay = overlayWindow else { return }
-
-            // Only re-elevate if we are still in immersive mode.
-            guard currentlyImmersive else { return }
-
-            isSystemSettingsActive = false
-            overlay.level = Self.overlayLevel
-
-            if let screen = overlay.screen ?? NSScreen.main, overlay.frame != screen.frame {
-                overlay.setFrame(screen.frame, display: true, animate: false)
-            }
-            overlay.makeKeyAndOrderFront(nil)
+            self.window = nil
+            self.original = nil
         }
     }
-}
-
-// MARK: - Overlay Window
-
-/// A borderless, transparent, key-capable NSWindow used as the Airlock overlay.
-///
-/// Created borderless from the start so there is never a titled → borderless
-/// style-mask transition.
-final class AirlockOverlayWindow: NSWindow {
-    init(screen: NSScreen) {
-        super.init(
-            contentRect: screen.frame,
-            styleMask: [.borderless, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = false
-        isReleasedWhenClosed = false
-    }
-
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
 }
 
 // MARK: - Window Observing View
 
-/// A custom NSView that observes when it's attached to/detached from a window.
-private class WindowObservingView: NSView {
+/// A custom NSView that reports when it's attached to / detached from a window.
+private final class WindowObservingView: NSView {
     var onWindowAttached: ((NSWindow) -> Void)?
     var onWindowDetached: (() -> Void)?
-    private var hasNotified = false
-    private var retryCount = 0
-    private let maxRetries = 10
+    private var attached = false
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil {
-            tryConfigureWindow()
-        } else if hasNotified {
-            hasNotified = false
-            onWindowDetached?()
-        }
-    }
-
-    override func viewDidMoveToSuperview() {
-        super.viewDidMoveToSuperview()
-        tryConfigureWindow()
-    }
-
-    private func tryConfigureWindow() {
-        if let window = self.window, !hasNotified {
-            hasNotified = true
+        if let window {
+            guard !attached else { return }
+            attached = true
             onWindowAttached?(window)
-        } else if self.window == nil && !hasNotified && retryCount < maxRetries {
-            retryCount += 1
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                self?.tryConfigureWindow()
-            }
+        } else if attached {
+            attached = false
+            onWindowDetached?()
         }
     }
 }

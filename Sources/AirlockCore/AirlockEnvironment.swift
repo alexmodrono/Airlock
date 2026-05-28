@@ -188,7 +188,8 @@ private struct AirlockDelayedContinueModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .task(id: delay) {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                let seconds = max(0, delay)
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 navigator?.setContinueEnabled(true)
             }

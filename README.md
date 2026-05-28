@@ -129,6 +129,7 @@ struct MyApp: App {
             }
         }
         .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
     }
 }
 
@@ -214,9 +215,38 @@ struct MyApp: App {
             AirlockView(manager: manager)
         }
         .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
     }
 }
 ```
+
+## Window Presentation
+
+Airlock presents onboarding as a card-sized window with an animated rainbow
+background (the card floats centered, with the rainbow showing as a soft halo
+around it). The window floats above other apps' windows, has transparent rounded
+corners, and does **not** dim or blur the desktop behind it.
+
+To get the intended look, set both of these on the `WindowGroup` scene:
+
+```swift
+.windowStyle(.hiddenTitleBar)
+.windowResizability(.contentSize)
+```
+
+`.windowResizability(.contentSize)` lets the window size itself to the card (and
+shrink back down to whatever you show after onboarding). When the onboarding view
+is removed, Airlock restores the window's original appearance.
+
+The window opens centered, and a faint rainbow rim glows around the card only
+while the intro animation plays. A small pill below the card shows the current
+Escape action — "Press the esc key to skip" during the intro, then "Press the
+esc key to close the onboarding" once it's showing.
+
+By default, Airlock hides other apps once as the intro starts, to draw attention
+to onboarding — the apps come back the instant the user switches to them, so it
+isn't sticky. Disable it with `hidesOtherAppsDuringIntro: false` on
+`AirlockConfiguration` (or on `AirlockView`).
 
 ## Built-in Checks
 

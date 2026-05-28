@@ -64,11 +64,14 @@ public final class AirlockManager: ObservableObject {
     }
 
     private func setupObservers() {
-        // Observe all check statuses
+        // Observe all checks. objectWillChange fires before the new value is
+        // applied, so recompute on the next main-actor turn to read fresh state.
         for check in checks {
-            check.$status
+            check.objectWillChange
                 .sink { [weak self] _ in
-                    self?.updateCompletionStatus()
+                    Task { @MainActor in
+                        self?.updateCompletionStatus()
+                    }
                 }
                 .store(in: &cancellables)
         }

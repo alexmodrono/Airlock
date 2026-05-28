@@ -59,14 +59,15 @@ public final class SetupCheck: FlightCheck, ObservableObject {
     ///   - title: Check title in the sidebar (default: "Setup")
     ///   - description: Check description (default: "Configure your system")
     ///   - icon: SF Symbol for the check (default: "gearshape.fill")
-    ///   - actionLabel: Action button label (default: "Configure")
+    ///   - actionLabel: Action button label. Empty by default because setup
+    ///     runs automatically when the check appears.
     public init(
         tasks: [SetupTask],
         stages: [String]? = nil,
         title: String = "Setup",
         description: String = "Configure your system",
         icon: String = "gearshape.fill",
-        actionLabel: String = "Configure"
+        actionLabel: String = ""
     ) {
         self.tasks = tasks
         self.stages = stages ?? tasks.map { $0.name }
@@ -90,7 +91,7 @@ public final class SetupCheck: FlightCheck, ObservableObject {
         title: String = "Setup",
         description: String = "Configure your system",
         icon: String = "gearshape.fill",
-        actionLabel: String = "Configure"
+        actionLabel: String = ""
     ) {
         let tasks = taskNames.map { name in
             SetupTask(name: name) {
@@ -110,14 +111,23 @@ public final class SetupCheck: FlightCheck, ObservableObject {
         AnyView(SetupCheckDetailView(check: self))
     }
 
-    public func performAction() {
+    /// Starts the setup work. Idempotent — safe to call more than once.
+    ///
+    /// The setup runs automatically when the check's detail view appears, so
+    /// it progresses without the user having to find an action button. Calling
+    /// ``performAction()`` is equivalent.
+    @MainActor
+    public func start() {
         guard !hasStarted else { return }
         hasStarted = true
 
         Task { @MainActor in
-            status = .checking
             await runSetup()
         }
+    }
+
+    public func performAction() {
+        Task { @MainActor in start() }
     }
 
     @MainActor
@@ -201,6 +211,9 @@ struct SetupCheckDetailView: View {
             }
             .padding(.horizontal, 32)
             .padding(.top, 16)
+        }
+        .onAppear {
+            check.start()
         }
     }
 }

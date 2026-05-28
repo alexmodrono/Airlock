@@ -185,8 +185,10 @@ public final class AirlockNavigator: ObservableObject {
 
         // Custom action path — run the step's action instead of advancing.
         if let action = customButtonAction {
+            // Set the busy flag synchronously so a second synchronous call to
+            // goToNext() is rejected by the guard above before the Task runs.
+            isRunningAction = true
             Task {
-                isRunningAction = true
                 await action()
                 isRunningAction = false
             }
@@ -194,16 +196,17 @@ public final class AirlockNavigator: ObservableObject {
         }
 
         // Default path — advance to the next step.
+        guard let step = currentStep, step.hasValidation else {
+            advanceToNextStep()
+            return
+        }
+
+        // Set the busy flag synchronously to prevent double validation.
+        isValidating = true
         Task {
-            // Run validation if present
-            if let step = currentStep, step.hasValidation {
-                isValidating = true
-                let passed = await step.validate()
-                isValidating = false
-
-                guard passed else { return }
-            }
-
+            let passed = await step.validate()
+            isValidating = false
+            guard passed else { return }
             advanceToNextStep()
         }
     }
@@ -261,9 +264,9 @@ public final class AirlockNavigator: ObservableObject {
     /// Only allows jumping to completed steps (going back).
     public func goTo(index: Int) {
         guard index >= 0, index < steps.count else { return }
-        guard index <= currentIndex else { return } // Can only go back
+        guard index < currentIndex else { return } // Can only go back
 
-        // Update statuses for skipped steps
+        // Update statuses for the steps we're stepping back over.
         for i in (index + 1)...currentIndex {
             stepStatuses[steps[i].id] = .pending
         }
@@ -275,6 +278,7 @@ public final class AirlockNavigator: ObservableObject {
             stepStatuses[step.id] = .current
         }
 
+        // The step we jumped back to was previously completed, so it can advance.
         canContinue = true
     }
 
@@ -338,11 +342,22 @@ public extension AirlockNavigator {
 }
 
 /// Internal adapter that wraps a FlightCheck as an AirlockStep.
+///
+/// Bridges the FlightCheck's `status` to the navigator's continue button: the
+/// step becomes continuable once the underlying check reports success, so
+/// checks designed for the FlightCheck flow also work in the declarative flow.
 private struct FlightCheckStepAdapter: View {
-    let check: AnyFlightCheck
+    @ObservedObject var check: AnyFlightCheck
+    @Environment(\.airlockNavigator) private var navigator
 
     var body: some View {
         check.detailView
+            .onAppear {
+                navigator?.setContinueEnabled(check.status == .success)
+            }
+            .onChange(of: check.status) { _, status in
+                navigator?.setContinueEnabled(status == .success)
+            }
     }
 }
 

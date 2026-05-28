@@ -13,66 +13,59 @@ import AirlockCore
 public struct AirlockView: View {
     @ObservedObject var manager: AirlockManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
 
-    @State private var overlayOpacity: Double = 0
     @State private var cardScale: Double = 0.95
     @State private var cardOpacity: Double = 0
     @State private var introComplete: Bool = false
+    @State private var didHideOtherApps: Bool = false
+    @State private var savedPresentationOptions: NSApplication.PresentationOptions?
     @State private var startupSound: NSSound?
     @State private var showSkipHint: Bool = false
     @State private var keyMonitor: Any?
     @State private var dismissTask: Task<Void, Never>?
-    @State private var focusTask: Task<Void, Never>?
     @State private var skipHintTask: Task<Void, Never>?
     @State private var soundFadeTask: Task<Void, Never>?
-    @FocusState private var isFocused: Bool
     @StateObject private var animationController = HelloAnimationController()
 
     private let showIntro: Bool
     private let introDuration: Double
+    private let hidesOtherAppsDuringIntro: Bool
+
+    /// The total window size: the fixed card plus a margin for the shadow and
+    /// the subtle intro rim glow.
+    private var windowSize: CGSize {
+        CGSize(
+            width: 820 + AirlockLayout.haloMargin * 2,
+            height: 580 + AirlockLayout.haloMargin * 2
+        )
+    }
 
     /// Creates an AirlockView.
     /// - Parameters:
     ///   - manager: The AirlockManager controlling the onboarding flow
     ///   - showIntroAnimation: Whether to show the "hello" intro animation (default: true)
     ///   - introDuration: Duration of the intro animation in seconds (default: 2.5)
+    ///   - hidesOtherAppsDuringIntro: Hide other apps once as the intro starts,
+    ///     to grab attention. They return as soon as the user switches back, so
+    ///     it isn't obtrusive. Only applies when `showIntroAnimation` is true.
     public init(
         manager: AirlockManager,
         showIntroAnimation: Bool = true,
-        introDuration: Double = 2.5
+        introDuration: Double = 2.5,
+        hidesOtherAppsDuringIntro: Bool = true
     ) {
         self.manager = manager
         self.showIntro = showIntroAnimation
         self.introDuration = introDuration
+        self.hidesOtherAppsDuringIntro = hidesOtherAppsDuringIntro
     }
 
     public var body: some View {
         ZStack {
-            // Fullscreen blurred and dimmed overlay
-            VisualEffectBlur(material: .fullScreenUI, blendingMode: .behindWindow)
-                .ignoresSafeArea()
-                .overlay(
-                    Color.black.opacity(colorScheme == .dark ? 0.5 : 0.3)
-                )
-                .opacity(overlayOpacity)
-
-            // Main content
-            VStack {
-                // Exit button in top-right corner (only show after intro)
-                HStack {
-                    Spacer()
-                    ExitButton {
-                        dismissWithAnimation()
-                    }
-                }
-                .padding(.trailing, 40)
-                .padding(.top, 40)
-                .opacity(introComplete ? cardOpacity : 0)
-
-                Spacer()
-
-                // Card with intro animation or main content
+            // Centered card with the intro animation or the main content.
+            // The window itself is transparent — no fullscreen blur, no rainbow
+            // background; the rainbow only appears as a rim glow during the intro.
+            VStack(spacing: 12) {
                 AirlockCardWithIntro(
                     manager: manager,
                     showIntro: showIntro,
@@ -83,22 +76,25 @@ public struct AirlockView: View {
                 .scaleEffect(cardScale)
                 .opacity(cardOpacity)
 
-                Spacer()
-
-                // Skip hint at bottom (only during intro)
-                if showIntro && !introComplete && showSkipHint {
-                    Text("Press Esc to skip")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.4))
-                        .padding(.bottom, 20)
-                        .transition(skipHintTransition)
+                // Keyboard hint pill below the card. During the intro it offers
+                // to skip; once onboarding is showing it offers to close. Same
+                // style for both so it reads consistently.
+                Group {
+                    if !introComplete {
+                        if showIntro && showSkipHint {
+                            AirlockHintPill(text: "Press the esc key to skip")
+                                .transition(skipHintTransition)
+                        }
+                    } else {
+                        AirlockHintPill(text: "Press the esc key to close the onboarding")
+                            .transition(.opacity)
+                    }
                 }
             }
             .animation(skipHintAnimation, value: showSkipHint)
             .animation(introStateAnimation, value: introComplete)
         }
-        .focusable()
-        .focused($isFocused)
+        .frame(width: windowSize.width, height: windowSize.height)
         .background(WindowAccessor())
         .onAppear {
             handleAppear()
@@ -106,35 +102,26 @@ public struct AirlockView: View {
         .onChange(of: introComplete) { _, complete in
             if complete {
                 showSkipHint = false
-                removeKeyMonitor()
+                // The intro is over: bring the Dock back and remap Esc to close.
+                restoreDock()
+                installEscapeMonitor { dismissWithAnimation() }
                 manager.startValidation()
             }
         }
         .onDisappear {
             handleDisappear()
         }
-        .onKeyPress(.escape) {
-            if !introComplete && showIntro {
-                skipIntroAnimation()
-                return .handled
-            }
-            return .ignored
-        }
     }
 
-    private func setupKeyMonitor() {
-        // Use NSEvent local monitor as a fallback for key detection during animations
-        // This ensures Escape key works even when SwiftUI focus system is unreliable
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [self] event in
-            if event.keyCode == 53 { // 53 is the key code for Escape
-                if !introComplete && showIntro {
-                    Task { @MainActor in
-                        skipIntroAnimation()
-                    }
-                    return nil // Consume the event
-                }
-            }
-            return event
+    /// Installs a local key monitor that runs `action` when Escape is pressed,
+    /// replacing any previous monitor. Maps Escape to "skip" during the intro
+    /// and to "close" afterwards.
+    private func installEscapeMonitor(_ action: @escaping @MainActor () -> Void) {
+        removeKeyMonitor()
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53 else { return event } // Escape
+            Task { @MainActor in action() }
+            return nil
         }
     }
 
@@ -148,7 +135,6 @@ public struct AirlockView: View {
     private func dismissWithAnimation() {
         dismissTask?.cancel()
         withAnimation(dismissAnimation) {
-            overlayOpacity = 0
             cardOpacity = 0
             cardScale = 0.95
         }
@@ -160,9 +146,6 @@ public struct AirlockView: View {
     }
 
     private func startAnimations() {
-        withAnimation(overlayAnimation) {
-            overlayOpacity = 1
-        }
         withAnimation(cardAnimation) {
             cardScale = 1.0
             cardOpacity = 1
@@ -214,36 +197,60 @@ public struct AirlockView: View {
 
     private func handleAppear() {
         startAnimations()
-        scheduleFocus()
 
         guard showIntro else {
+            // No intro: the onChange(introComplete) handler installs the
+            // Escape-to-close monitor.
             introComplete = true
             return
         }
 
+        if hidesOtherAppsDuringIntro {
+            focusForIntro()
+        }
+
         playStartupSound()
-        setupKeyMonitor()
+        installEscapeMonitor { skipIntroAnimation() }
         scheduleSkipHint()
+    }
+
+    /// One-time attention grab: bring this app forward, hide the other apps,
+    /// and hide the Dock. Other apps return as soon as the user switches to
+    /// them; the Dock is restored when the intro ends (see ``restoreDock()``).
+    private func focusForIntro() {
+        guard !didHideOtherApps else { return }
+        didHideOtherApps = true
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.hideOtherApplications(nil)
+        hideDock()
+    }
+
+    private func hideDock() {
+        guard savedPresentationOptions == nil else { return }
+        let current = NSApp.presentationOptions
+        savedPresentationOptions = current
+        var updated = current
+        updated.remove(.autoHideDock)
+        updated.insert(.hideDock)
+        NSApp.presentationOptions = updated
+    }
+
+    /// Restores the Dock to whatever it was before the intro hid it.
+    private func restoreDock() {
+        guard let saved = savedPresentationOptions else { return }
+        NSApp.presentationOptions = saved
+        savedPresentationOptions = nil
     }
 
     private func handleDisappear() {
         dismissTask?.cancel()
-        focusTask?.cancel()
         skipHintTask?.cancel()
         soundFadeTask?.cancel()
         manager.stopValidation()
         startupSound?.stop()
         startupSound = nil
         removeKeyMonitor()
-    }
-
-    private func scheduleFocus() {
-        focusTask?.cancel()
-        focusTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            guard !Task.isCancelled else { return }
-            isFocused = true
-        }
+        restoreDock()
     }
 
     private func scheduleSkipHint() {
@@ -265,10 +272,6 @@ public struct AirlockView: View {
 
     private var introStateAnimation: Animation {
         .easeInOut(duration: reduceMotion ? 0.15 : 0.2)
-    }
-
-    private var overlayAnimation: Animation {
-        .easeOut(duration: reduceMotion ? 0.12 : 0.4)
     }
 
     private var cardAnimation: Animation {
@@ -305,17 +308,13 @@ struct AirlockCardWithIntro: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @State private var contentOpacity: Double = 0
-    @State private var glowPhase: CGFloat = 0
-    @State private var glowOpacity: Double = 0
 
     var body: some View {
         ZStack {
-            // Animated glow behind the card (only during intro)
+            // Subtle rainbow rim glow, only while the intro is playing.
             if showIntro && !introComplete {
-                AnimatedGlowEffect(phase: glowPhase, colors: StartupAnimationView.defaultGlowColors)
-                    .frame(width: 860, height: 620)
-                    .blur(radius: 40)
-                    .opacity(glowOpacity)
+                AirlockIntroGlow(cardWidth: 820, cardHeight: 580)
+                    .transition(.opacity)
             }
 
             // Card content
@@ -385,38 +384,17 @@ struct AirlockCardWithIntro: View {
         .onAppear {
             if !showIntro {
                 contentOpacity = 1
-            } else {
-                withAnimation(glowAnimation) {
-                    glowOpacity = reduceMotion ? 0.25 : 0.6
-                }
-
-                if !reduceMotion {
-                    withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
-                        glowPhase = 1
-                    }
-                }
             }
         }
     }
 
     private func completeIntro() {
-        withAnimation(glowFadeAnimation) {
-            glowOpacity = 0
-        }
         withAnimation(introCompletionAnimation) {
             introComplete = true
         }
         withAnimation(contentAnimation) {
             contentOpacity = 1
         }
-    }
-
-    private var glowAnimation: Animation {
-        .easeIn(duration: reduceMotion ? 0.2 : 0.5)
-    }
-
-    private var glowFadeAnimation: Animation {
-        .easeOut(duration: reduceMotion ? 0.2 : 0.5)
     }
 
     private var introCompletionAnimation: Animation {
@@ -452,37 +430,28 @@ struct VisualEffectBlur: NSViewRepresentable {
     }
 }
 
-// MARK: - Exit Button
+// MARK: - Hint Pill
 
-struct ExitButton: View {
-    let action: () -> Void
+/// A small, subtle frosted pill used for the keyboard hints shown beneath the
+/// card (e.g. "Press Esc to skip" during the intro, and the close hint after).
+/// Shared so both hints look identical.
+struct AirlockHintPill: View {
+    let text: String
 
-    @State private var isHovering = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Button(action: action) {
-            Label("Exit setup", systemImage: "xmark")
-                .labelStyle(.iconOnly)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(.white.opacity(isHovering ? 1.0 : 0.6))
-                .frame(width: 28, height: 28)
-                .background(
-                    Circle()
-                        .fill(Color.white.opacity(isHovering ? 0.25 : 0.15))
-                )
-                .overlay(
-                    Circle()
-                        .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
-                )
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
-                isHovering = hovering
-            }
-        }
-        .help("Exit setup")
-        .accessibilityHint("Closes the setup flow")
+        Text(text)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08), lineWidth: 0.5)
+            )
+            .accessibilityLabel(text)
     }
 }
 

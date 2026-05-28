@@ -4,6 +4,7 @@
 // A configurable flight check that verifies multiple permissions at once.
 
 import SwiftUI
+import Combine
 import AirlockCore
 import AirlockUI
 
@@ -32,7 +33,12 @@ public final class PermissionsCheck: FlightCheck, ObservableObject {
     private let permissions: [PermissionType]
     private let stateProvider: (PermissionType) -> PermissionGrantState
     private let requestHandler: PermissionChecker.RequestHandler?
-    @Published private var permissionStates: [PermissionType: PermissionGrantState] = [:]
+
+    // Single source of truth for permission state and the only poller. Created
+    // lazily on the main actor (PermissionChecker is @MainActor) and shared by
+    // both `validate()` and the detail view.
+    private var _checker: PermissionChecker?
+    private var checkerCancellable: AnyCancellable?
 
     /// Creates a permissions check for the specified permission types.
     ///
@@ -57,38 +63,53 @@ public final class PermissionsCheck: FlightCheck, ObservableObject {
         self.requestHandler = requestHandler
     }
 
+    /// The shared permission checker. Lazily created on first access.
+    @MainActor
+    public var checker: PermissionChecker {
+        if let checker = _checker {
+            return checker
+        }
+        let checker = PermissionChecker(
+            permissions: permissions,
+            stateProvider: stateProvider,
+            requestHandler: requestHandler
+        )
+        // Re-publish so views observing the check react to permission changes.
+        checkerCancellable = checker.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        _checker = checker
+        return checker
+    }
+
     public var detailView: AnyView {
         AnyView(PermissionsCheckDetailView(check: self))
     }
 
     public func performAction() {
-        let unresolvedPermissions = permissions.filter { !resolvedState(for: $0).isGranted }
-        let preferredPermission = unresolvedPermissions.first {
-            switch $0.requestAvailability {
-            case .inAppPrompt, .openSystemSettings:
-                return true
-            case .requiresCustomHandling:
-                return false
-            }
-        } ?? unresolvedPermissions.first
+        Task { @MainActor in
+            let checker = self.checker
+            checker.checkAllPermissions()
+            let unresolved = permissions.filter { !checker.state(for: $0).isGranted }
+            let preferred = unresolved.first {
+                switch $0.requestAvailability {
+                case .inAppPrompt, .openSystemSettings:
+                    return true
+                case .requiresCustomHandling:
+                    return false
+                }
+            } ?? unresolved.first
 
-        if let permission = preferredPermission {
-            Task { @MainActor in
-                _ = await requestAccess(for: permission)
+            if let permission = preferred {
+                _ = await checker.requestAccess(for: permission)
             }
         }
     }
 
     @MainActor
     public func validate() async -> Bool {
-        var updatedStates: [PermissionType: PermissionGrantState] = [:]
-        for permission in permissions {
-            updatedStates[permission] = stateProvider(permission)
-        }
-        permissionStates = updatedStates
-
-        // All permissions must be granted
-        return permissions.allSatisfy { updatedStates[$0]?.isGranted == true }
+        checker.checkAllPermissions()
+        return checker.allGranted
     }
 
     /// The list of permissions being checked
@@ -97,34 +118,21 @@ public final class PermissionsCheck: FlightCheck, ObservableObject {
     }
 
     /// Current permission states.
+    @MainActor
     public var currentStates: [PermissionType: PermissionGrantState] {
-        permissionStates
+        checker.permissionStates
     }
 
     /// Currently granted permissions
+    @MainActor
     public var currentlyGranted: Set<PermissionType> {
-        Set(permissionStates.compactMap { $0.value.isGranted ? $0.key : nil })
+        checker.grantedPermissions
     }
 
     /// Returns the current state for a permission.
-    public func state(for permission: PermissionType) -> PermissionGrantState {
-        permissionStates[permission] ?? stateProvider(permission)
-    }
-
-    fileprivate func resolvedState(for permission: PermissionType) -> PermissionGrantState {
-        state(for: permission)
-    }
-
     @MainActor
-    fileprivate func requestAccess(for permission: PermissionType) async -> PermissionGrantState {
-        let state = if let requestHandler {
-            await requestHandler(permission)
-        } else {
-            await permission.requestAccess()
-        }
-
-        permissionStates[permission] = state
-        return state
+    public func state(for permission: PermissionType) -> PermissionGrantState {
+        checker.state(for: permission)
     }
 }
 
@@ -132,24 +140,8 @@ public final class PermissionsCheck: FlightCheck, ObservableObject {
 
 struct PermissionsCheckDetailView: View {
     @ObservedObject var check: PermissionsCheck
-    @StateObject private var permissionChecker: PermissionChecker
 
     @Environment(\.colorScheme) private var colorScheme
-
-    init(check: PermissionsCheck) {
-        self.check = check
-        self._permissionChecker = StateObject(
-            wrappedValue: PermissionChecker(
-                permissions: check.requiredPermissions,
-                stateProvider: { permission in
-                    check.resolvedState(for: permission)
-                },
-                requestHandler: { permission in
-                    await check.requestAccess(for: permission)
-                }
-            )
-        )
-    }
 
     var body: some View {
         VStack(spacing: 24) {
@@ -184,16 +176,16 @@ struct PermissionsCheckDetailView: View {
             PermissionsGroupView(
                 title: "Required Permissions",
                 permissions: check.requiredPermissions,
-                permissionStates: permissionChecker.permissionStates
+                permissionStates: check.checker.permissionStates
             ) { permission in
                 Task {
-                    _ = await permissionChecker.requestAccess(for: permission)
+                    _ = await check.checker.requestAccess(for: permission)
                 }
             }
             .padding(.horizontal, 24)
 
             // Instructions
-            if !permissionChecker.allGranted {
+            if !check.checker.allGranted {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("How to grant permissions")
                         .font(.system(size: 11, weight: .semibold))
@@ -221,12 +213,12 @@ struct PermissionsCheckDetailView: View {
                 .frame(height: 16)
         }
         .onAppear {
-            permissionChecker.startMonitoring(interval: 1.0)
+            check.checker.startMonitoring(interval: 1.0)
         }
         .onDisappear {
-            permissionChecker.stopMonitoring()
+            check.checker.stopMonitoring()
         }
-        .onChange(of: permissionChecker.allGranted) { _, allGranted in
+        .onChange(of: check.checker.allGranted) { _, allGranted in
             if allGranted {
                 check.status = .success
             }

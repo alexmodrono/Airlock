@@ -36,6 +36,9 @@ struct DotLottieAnimationView: NSViewRepresentable {
     let loopMode: LottieLoopMode
     let animationSpeed: CGFloat
     let colorScheme: ColorScheme
+    /// Hard upper bound on how long the intro can run before it auto-completes,
+    /// regardless of the animation's own length or a load failure.
+    let maxDuration: Double
     var onComplete: (() -> Void)?
     @ObservedObject var controller: HelloAnimationController
 
@@ -59,6 +62,7 @@ struct DotLottieAnimationView: NSViewRepresentable {
             fileName: fileName,
             loopMode: loopMode,
             animationSpeed: animationSpeed,
+            maxDuration: maxDuration,
             onComplete: onComplete
         )
     }
@@ -67,24 +71,37 @@ struct DotLottieAnimationView: NSViewRepresentable {
         let fileName: String
         let loopMode: LottieLoopMode
         let animationSpeed: CGFloat
+        let maxDuration: Double
         var onComplete: (() -> Void)?
         private var animationView: Lottie.LottieAnimationView?
         private var hasCalledComplete = false
         private var currentColorScheme: ColorScheme?
+        private var timeoutWork: DispatchWorkItem?
 
-        init(fileName: String, loopMode: LottieLoopMode, animationSpeed: CGFloat, onComplete: (() -> Void)?) {
+        init(fileName: String, loopMode: LottieLoopMode, animationSpeed: CGFloat, maxDuration: Double, onComplete: (() -> Void)?) {
             self.fileName = fileName
             self.loopMode = loopMode
             self.animationSpeed = animationSpeed
+            self.maxDuration = maxDuration
             self.onComplete = onComplete
+        }
+
+        deinit {
+            timeoutWork?.cancel()
         }
 
         func setupAnimation(in containerView: NSView, colorScheme: ColorScheme) {
             self.currentColorScheme = colorScheme
 
+            // Safety net: never let the intro hang. If the animation hasn't
+            // finished within maxDuration (or the resource fails to load and
+            // never fires a completion), complete anyway.
+            scheduleTimeout()
+
             // Try to load dotLottie file
             guard let url = airlockUIBundle.url(forResource: fileName, withExtension: "lottie") else {
-                print("Could not find \(fileName).lottie in bundle")
+                print("Could not find \(fileName).lottie in bundle — skipping intro animation")
+                callComplete()
                 return
             }
 
@@ -103,10 +120,25 @@ struct DotLottieAnimationView: NSViewRepresentable {
                         if let animation = LottieAnimation.named(self.fileName, bundle: airlockUIBundle) {
                             let lottieView = Lottie.LottieAnimationView(animation: animation)
                             self.configureAndAdd(lottieView, to: containerView, colorScheme: colorScheme)
+                        } else {
+                            // Nothing to show — don't strand the flow on the intro.
+                            self.callComplete()
                         }
                     }
                 }
             }
+        }
+
+        private func scheduleTimeout() {
+            timeoutWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                self?.callComplete()
+            }
+            timeoutWork = work
+            // Pure hang guard — generous enough that it never cuts the animation
+            // short. The Lottie file drives the real timing and completes itself.
+            let safety = max(8.0, maxDuration)
+            DispatchQueue.main.asyncAfter(deadline: .now() + safety, execute: work)
         }
 
         private func configureAndAdd(_ lottieView: Lottie.LottieAnimationView, to containerView: NSView, colorScheme: ColorScheme) {
@@ -181,12 +213,12 @@ struct DotLottieAnimationView: NSViewRepresentable {
         }
 
         func accelerateToEnd() {
-            guard let animationView = animationView, !hasCalledComplete else { return }
+            guard !hasCalledComplete else { return }
 
-            // Accelerate animation speed significantly
-            animationView.animationSpeed = 8.0
+            // Accelerate the animation if one is loaded; otherwise just finish.
+            animationView?.animationSpeed = 8.0
 
-            // Also schedule completion in case acceleration doesn't trigger callback
+            // Complete shortly after, whether or not acceleration fires a callback.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.callComplete()
             }
@@ -195,6 +227,7 @@ struct DotLottieAnimationView: NSViewRepresentable {
         private func callComplete() {
             guard !hasCalledComplete else { return }
             hasCalledComplete = true
+            timeoutWork?.cancel()
             onComplete?()
         }
     }
@@ -205,6 +238,7 @@ struct DotLottieAnimationView: NSViewRepresentable {
 /// Displays the "hello" Lottie animation.
 public struct HelloAnimationView: View {
     let onComplete: (() -> Void)?
+    let duration: Double
     @ObservedObject var controller: HelloAnimationController
     @Environment(\.colorScheme) private var colorScheme
 
@@ -215,7 +249,10 @@ public struct HelloAnimationView: View {
         duration: Double = 2.5,
         onComplete: (() -> Void)? = nil
     ) {
-        // Duration is controlled by the Lottie file itself
+        // The Lottie file drives the real timing; the animation plays to its
+        // natural end. `duration` only raises the safety fallback used to avoid
+        // a hang if the animation never reports completion.
+        self.duration = duration
         self.controller = controller ?? HelloAnimationController()
         self.onComplete = onComplete
     }
@@ -226,6 +263,7 @@ public struct HelloAnimationView: View {
             loopMode: .playOnce,
             animationSpeed: 1.0,
             colorScheme: colorScheme,
+            maxDuration: duration,
             onComplete: {
                 // Fade out after animation completes
                 withAnimation(.easeOut(duration: 0.3)) {

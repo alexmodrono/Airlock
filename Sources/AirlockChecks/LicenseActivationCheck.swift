@@ -112,9 +112,16 @@ public final class LicenseActivationCheck: FlightCheck, ObservableObject {
 
     @MainActor
     public func validate() async -> Bool {
-        guard !licenseKey.isEmpty else {
-            return false
-        }
+        // Pure predicate. The actual network validation runs only on explicit
+        // submission (see submitLicenseKey / validateStoredKeyIfNeeded) so the
+        // background validation loop never re-POSTs a stale key on every tick.
+        status == .success
+    }
+
+    /// Runs the network validation against the current `licenseKey`.
+    @MainActor
+    private func runNetworkValidation() async -> Bool {
+        guard !licenseKey.isEmpty else { return false }
 
         do {
             let result = try await validator(licenseKey, machineIDProvider())
@@ -137,7 +144,18 @@ public final class LicenseActivationCheck: FlightCheck, ObservableObject {
         licenseKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
         status = .checking
 
-        let valid = await validate()
+        let valid = await runNetworkValidation()
+        status = valid ? .success : .active
+    }
+
+    /// Validates a previously stored key once (e.g. on launch), without
+    /// requiring the user to re-enter it. No-op if already validated or empty.
+    @MainActor
+    public func validateStoredKeyIfNeeded() async {
+        guard status != .success, status != .checking, !licenseKey.isEmpty else { return }
+        status = .checking
+
+        let valid = await runNetworkValidation()
         status = valid ? .success : .active
     }
 
@@ -273,6 +291,7 @@ struct LicenseActivationDetailView: View {
         }
         .onAppear {
             inputKey = check.licenseKey
+            Task { await check.validateStoredKeyIfNeeded() }
         }
     }
 

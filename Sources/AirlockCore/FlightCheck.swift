@@ -49,6 +49,11 @@ public extension FlightCheck {
 // MARK: - Type Erasure
 
 /// A type-erased wrapper around any FlightCheck.
+///
+/// The wrapper does not store its own copy of the status. Reads and writes
+/// pass straight through to the underlying check, so there is a single source
+/// of truth and the two can never drift. Any change to the underlying check is
+/// republished so SwiftUI views observing the wrapper stay up to date.
 public class AnyFlightCheck: ObservableObject, Identifiable {
     public let id: UUID
     public let title: String
@@ -56,12 +61,18 @@ public class AnyFlightCheck: ObservableObject, Identifiable {
     public let icon: String
     public let actionLabel: String
 
-    @Published public var status: CheckStatus
+    /// Read/write pass-through to the wrapped check's status.
+    public var status: CheckStatus {
+        get { _getStatus() }
+        set { _setStatus(newValue) }
+    }
 
+    private let _getStatus: () -> CheckStatus
+    private let _setStatus: (CheckStatus) -> Void
     private let _detailView: () -> AnyView
     private let _performAction: () -> Void
     private let _validate: @MainActor () async -> Bool
-    private var cancellables = Set<AnyCancellable>()
+    private var cancellable: AnyCancellable?
 
     public init<C: FlightCheck>(_ check: C) {
         self.id = check.id
@@ -69,20 +80,20 @@ public class AnyFlightCheck: ObservableObject, Identifiable {
         self.description = check.description
         self.icon = check.icon
         self.actionLabel = check.actionLabel
-        self.status = check.status
 
+        self._getStatus = { check.status }
+        self._setStatus = { check.status = $0 }
         self._detailView = { check.detailView }
         self._performAction = check.performAction
         self._validate = check.validate
 
-        // Observe changes to the underlying check's status
-        check.objectWillChange
-            .sink { [weak self] _ in
-                Task { @MainActor in
-                    self?.status = check.status
-                }
-            }
-            .store(in: &cancellables)
+        // Forward the underlying check's change notifications so views observing
+        // the wrapper re-render. objectWillChange fires before the value lands,
+        // so consumers that need the post-change value must read it after the
+        // current run-loop turn (see AirlockManager).
+        self.cancellable = check.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     public var detailView: AnyView {
