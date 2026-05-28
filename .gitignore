@@ -2,6 +2,7 @@
 .build/
 .swiftpm/
 Package.resolved
+!AirlockDemo/AirlockDemo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 DerivedData/
 xcuserdata/
 *.xcuserstate

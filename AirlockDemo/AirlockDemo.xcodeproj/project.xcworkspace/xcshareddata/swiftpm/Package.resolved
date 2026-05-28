@@ -1,0 +1,24 @@
+{
+  "originHash" : "a6bc71e4a6653f0f208fadd491d18b7d9af973e30a9e954fa6490769e931b244",
+  "pins" : [
+    {
+      "identity" : "airlock",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/alexmodrono/Airlock",
+      "state" : {
+        "branch" : "main",
+        "revision" : "7226be7b9b2640f42d353981556aeb8529cd77ea"
+      }
+    },
+    {
+      "identity" : "lottie-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/airbnb/lottie-spm.git",
+      "state" : {
+        "revision" : "69faaefa7721fba9e434a52c16adf4329c9084db",
+        "version" : "4.6.0"
+      }
+    }
+  ],
+  "version" : 3
+}
