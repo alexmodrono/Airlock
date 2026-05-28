@@ -40,6 +40,19 @@ public struct AirlockView: View {
         )
     }
 
+    /// Whether the Escape-hint pill should be visible.
+    private var shouldShowEscHint: Bool {
+        if introComplete { return true }
+        return showIntro && showSkipHint
+    }
+
+    /// The Escape-hint pill's current text.
+    private var escHintText: String {
+        introComplete
+            ? "Press the esc key to close the onboarding"
+            : "Press the esc key to skip"
+    }
+
     /// Creates an AirlockView.
     /// - Parameters:
     ///   - manager: The AirlockManager controlling the onboarding flow
@@ -76,19 +89,12 @@ public struct AirlockView: View {
                 .scaleEffect(cardScale)
                 .opacity(cardOpacity)
 
-                // Keyboard hint pill below the card. During the intro it offers
-                // to skip; once onboarding is showing it offers to close. Same
-                // style for both so it reads consistently.
-                Group {
-                    if !introComplete {
-                        if showIntro && showSkipHint {
-                            AirlockHintPill(text: "Press the esc key to skip")
-                                .transition(skipHintTransition)
-                        }
-                    } else {
-                        AirlockHintPill(text: "Press the esc key to close the onboarding")
-                            .transition(.opacity)
-                    }
+                // A single keyboard-hint pill below the card. The same pill is
+                // reused throughout: only its text changes (skip during the
+                // intro, close afterwards), crossfading between the two.
+                if shouldShowEscHint {
+                    AirlockHintPill(text: escHintText)
+                        .transition(skipHintTransition)
                 }
             }
             .animation(skipHintAnimation, value: showSkipHint)
@@ -444,6 +450,9 @@ struct AirlockHintPill: View {
         Text(text)
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(.secondary)
+            // Crossfade the text (and resize the pill) when the label changes,
+            // rather than swapping abruptly.
+            .contentTransition(.opacity)
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
             .background(.ultraThinMaterial, in: Capsule())
@@ -452,6 +461,7 @@ struct AirlockHintPill: View {
                     .stroke(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08), lineWidth: 0.5)
             )
             .accessibilityLabel(text)
+            .animation(.easeInOut(duration: 0.25), value: text)
     }
 }
 

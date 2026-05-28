@@ -140,6 +140,19 @@ public struct AirlockFlowView: View {
         )
     }
 
+    /// Whether the Escape-hint pill should be visible.
+    private var shouldShowEscHint: Bool {
+        if introComplete { return true }
+        return configuration.showIntro && configuration.allowSkipIntro && showSkipHint
+    }
+
+    /// The Escape-hint pill's current text.
+    private var escHintText: String {
+        introComplete
+            ? "Press the esc key to close the onboarding"
+            : "Press the esc key to skip"
+    }
+
     public var body: some View {
         ZStack {
             // Centered card with the intro animation or the main content.
@@ -155,19 +168,12 @@ public struct AirlockFlowView: View {
                 .scaleEffect(cardScale)
                 .opacity(cardOpacity)
 
-                // Keyboard hint pill below the card. During the intro it offers
-                // to skip; once onboarding is showing it offers to close. Same
-                // style for both so it reads consistently.
-                Group {
-                    if !introComplete {
-                        if configuration.showIntro && showSkipHint && configuration.allowSkipIntro {
-                            AirlockHintPill(text: "Press the esc key to skip")
-                                .transition(skipHintTransition)
-                        }
-                    } else {
-                        AirlockHintPill(text: "Press the esc key to close the onboarding")
-                            .transition(.opacity)
-                    }
+                // A single keyboard-hint pill below the card. The same pill is
+                // reused throughout: only its text changes (skip during the
+                // intro, close afterwards), crossfading between the two.
+                if shouldShowEscHint {
+                    AirlockHintPill(text: escHintText)
+                        .transition(skipHintTransition)
                 }
             }
             .animation(skipHintAnimation, value: showSkipHint)
