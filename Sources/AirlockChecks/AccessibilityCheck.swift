@@ -1,17 +1,20 @@
 // AccessibilityCheck.swift
 // AirlockChecks
 
-import SwiftUI
+import AppKit
+import Combine
 import AirlockCore
+import AirlockUI
 
 /// Verifies that Accessibility permissions are granted.
+@MainActor
 public final class AccessibilityCheck: FlightCheck, ObservableObject {
     public struct Note: Equatable {
         public let icon: String
         public let message: String
-        public let tint: Color
+        public let tint: NSColor
 
-        public init(icon: String = "lock.shield", message: String, tint: Color = .green) {
+        public init(icon: String = "lock.shield", message: String, tint: NSColor = .green) {
             self.icon = icon
             self.message = message
             self.tint = tint
@@ -80,7 +83,7 @@ public final class AccessibilityCheck: FlightCheck, ObservableObject {
 
     @Published public var status: CheckStatus = .pending
 
-    fileprivate let configuration: Configuration
+    let configuration: Configuration
 
     public convenience init() {
         self.init(configuration: .default())
@@ -94,8 +97,8 @@ public final class AccessibilityCheck: FlightCheck, ObservableObject {
         self.actionLabel = configuration.actionLabel
     }
 
-    public var detailView: AnyView {
-        AnyView(AccessibilityDetailView(check: self))
+    public var detailView: NSViewController {
+        NativeCheckViewController(check: self)
     }
 
     public func performAction() {
@@ -105,51 +108,5 @@ public final class AccessibilityCheck: FlightCheck, ObservableObject {
     @MainActor
     public func validate() async -> Bool {
         PermissionType.accessibility.isGranted
-    }
-}
-
-// MARK: - Detail View
-
-struct AccessibilityDetailView: View {
-    @ObservedObject var check: AccessibilityCheck
-
-    var body: some View {
-        CheckDetailView(
-            icon: check.configuration.icon,
-            title: check.configuration.detailTitle,
-            description: check.configuration.detailDescription,
-            status: check.status
-        ) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("How to Enable")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(1)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(check.configuration.instructions.enumerated()), id: \.offset) { index, instruction in
-                        InstructionStep(index + 1, instruction)
-                    }
-                }
-
-                if let note = check.configuration.note {
-                    HStack(spacing: 8) {
-                        Image(systemName: note.icon)
-                            .foregroundStyle(note.tint)
-                        Text(note.message)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(note.tint.opacity(0.1))
-                    )
-                }
-            }
-            .padding(.horizontal, 40)
-            .padding(.top, 16)
-        }
     }
 }

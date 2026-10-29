@@ -3,7 +3,7 @@
 //
 // A configurable flight check that verifies multiple permissions at once.
 
-import SwiftUI
+import AppKit
 import Combine
 import AirlockCore
 import AirlockUI
@@ -21,6 +21,7 @@ import AirlockUI
 ///     description: "Grant the required permissions to continue."
 /// )
 /// ```
+@MainActor
 public final class PermissionsCheck: FlightCheck, ObservableObject {
     public let id = UUID()
     public let title: String
@@ -82,8 +83,8 @@ public final class PermissionsCheck: FlightCheck, ObservableObject {
         return checker
     }
 
-    public var detailView: AnyView {
-        AnyView(PermissionsCheckDetailView(check: self))
+    public var detailView: NSViewController {
+        NativeCheckViewController(check: self)
     }
 
     public func performAction() {
@@ -133,107 +134,5 @@ public final class PermissionsCheck: FlightCheck, ObservableObject {
     @MainActor
     public func state(for permission: PermissionType) -> PermissionGrantState {
         checker.state(for: permission)
-    }
-}
-
-// MARK: - Detail View
-
-struct PermissionsCheckDetailView: View {
-    @ObservedObject var check: PermissionsCheck
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-                .frame(height: 16)
-
-            // Icon
-            ZStack {
-                Circle()
-                    .fill(iconBackgroundColor.opacity(colorScheme == .dark ? 0.2 : 0.12))
-                    .frame(width: 80, height: 80)
-
-                Image(systemName: check.icon)
-                    .font(.system(size: 32, weight: .medium))
-                    .foregroundStyle(iconColor)
-            }
-
-            // Title & Description
-            VStack(spacing: 8) {
-                Text(check.title)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-
-                Text(check.description)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 20)
-            }
-
-            // Permissions list
-            PermissionsGroupView(
-                title: "Required Permissions",
-                permissions: check.requiredPermissions,
-                permissionStates: check.checker.permissionStates
-            ) { permission in
-                Task {
-                    _ = await check.checker.requestAccess(for: permission)
-                }
-            }
-            .padding(.horizontal, 24)
-
-            // Instructions
-            if !check.checker.allGranted {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("How to grant permissions")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-
-                    HStack(spacing: 8) {
-                        Image(systemName: "info.circle.fill")
-                            .foregroundStyle(.blue)
-                        Text("Use the action button to request access directly when supported. Some permissions require System Settings, and app-specific permissions like Automation may require a custom handler from the host app.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.blue.opacity(colorScheme == .dark ? 0.15 : 0.08))
-                    )
-                }
-                .padding(.horizontal, 24)
-            }
-
-            Spacer()
-                .frame(height: 16)
-        }
-        .onAppear {
-            check.checker.startMonitoring(interval: 1.0)
-        }
-        .onDisappear {
-            check.checker.stopMonitoring()
-        }
-        .onChange(of: check.checker.allGranted) { _, allGranted in
-            if allGranted {
-                check.status = .success
-            }
-        }
-    }
-
-    private var iconColor: Color {
-        switch check.status {
-        case .success: return .green
-        case .active: return .orange
-        default: return .blue
-        }
-    }
-
-    private var iconBackgroundColor: Color {
-        iconColor
     }
 }

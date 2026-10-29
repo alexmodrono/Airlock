@@ -3,27 +3,64 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main, feat/appkit-onboarding]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: airlock-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
 jobs:
-  build-and-test:
-    runs-on: macos-14
-
+  package:
+    name: Package (${{ matrix.configuration }})
+    runs-on: macos-26
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
     steps:
-      - name: Check Out Repository
-        uses: actions/checkout@v4
-
-      - name: Set Up Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          xcode-version: latest-stable
+          persist-credentials: false
+      - name: Verify toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Test package and compile demo
+        env:
+          CONFIGURATION: ${{ matrix.configuration }}
+        run: |
+          set -o pipefail
+          swift test --configuration "$CONFIGURATION" --force-resolved-versions \
+            --scratch-path "$RUNNER_TEMP/AirlockBuild" 2>&1 | tee "$RUNNER_TEMP/package-tests.log"
+      - name: Retain test log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: airlock-${{ matrix.configuration }}
+          path: ${{ runner.temp }}/package-tests.log
+          retention-days: 14
+          if-no-files-found: warn
 
-      - name: Build Package
-        run: swift build
-
-      - name: Test Package
-        run: swift test
-
-      - name: Build Demo App
-        run: xcodebuild -project AirlockDemo/AirlockDemo.xcodeproj -scheme AirlockDemo -configuration Debug -destination 'platform=macOS' build
+  demo:
+    name: Xcode demo
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build unsigned demo
+        run: |
+          xcodebuild -project AirlockDemo/AirlockDemo.xcodeproj -scheme AirlockDemo \
+            -configuration Debug -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/DemoDerivedData" \
+            -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
