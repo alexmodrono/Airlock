@@ -86,7 +86,7 @@ public final class AnyFlightCheck: ObservableObject, Identifiable {
         self._setStatus = { check.status = $0 }
         self._detailView = { check.detailView }
         self._performAction = check.performAction
-        self._validate = check.validate
+        self._validate = { await check.validate() }
 
         // Forward the underlying check's change notifications so views observing
         // the wrapper re-render. objectWillChange fires before the value lands,
