@@ -54,18 +54,18 @@ public final class AirlockWindowController: NSWindowController, NSWindowDelegate
         navigation = AirlockNavigationController(navigator: navigator, navigationEnabled: !playsIntro)
         navigationWindow = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                    backing: .buffered, defer: false)
-        let window = AirlockWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 500),
+        let window = AirlockWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 520),
                                    styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
         window.title = "Set Up \(navigator.appName)"
         window.minSize = NSSize(width: 500, height: 480)
         window.isMovableByWindowBackground = true
         window.contentViewController = flow
-        window.setContentSize(NSSize(width: 560, height: 500))
+        window.setContentSize(NSSize(width: 540, height: 520))
         window.isReleasedWhenClosed = false
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
-        if autosavesFrame { window.setFrameAutosaveName("Airlock.\(navigator.appName).compact") }
+        if autosavesFrame { window.setFrameAutosaveName("Airlock.\(navigator.appName).onboarding") }
         glowWindow.title = "Airlock glow"
         glowWindow.contentView = glow
         glowWindow.isReleasedWhenClosed = false

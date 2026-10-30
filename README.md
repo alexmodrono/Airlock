@@ -10,7 +10,7 @@ It requires Xcode 26 or later (Swift 6.2 and the macOS 26 SDK) to build and supp
 
 `AirlockWindowController.present()` brings the onboarding app forward. It does
 not hide, close, or terminate other applications, dim the desktop, or change
-system presentation options. The content window is solid and defaults to 560 × 500 points, with no title bar or traffic-light
+system presentation options. The content window is solid and defaults to 540 × 520 points, with no title bar or traffic-light
 buttons. Drag its background to move it, resize its edges, and use Command-W to
 close it. Command-Option-1 through 9 selects an available setup step.
 
@@ -26,6 +26,12 @@ A separate glass pill above the content contains native segmented step controls.
 It moves with the main window, stays on screen when resized, and closes with it.
 Steps that would skip validation or cross a completed checkpoint remain disabled.
 The intro can be skipped; Reduce Motion displays its final frame.
+
+The layout follows Crono's compact onboarding: generous content above a footer
+with large Back and Continue buttons together on the right. Pages enter with a
+24-point directional fade; Reduce Motion uses a short opacity transition. The
+previous screen is removed immediately, so its fields cannot remain active or
+be captured in a transition snapshot.
 
 The navigation pill uses AppKit's NSGlassEffectView on macOS 26 and later, with a visual
 effect fallback on macOS 14–15 and an opaque surface when Reduce Transparency is
@@ -68,6 +74,12 @@ leaving the screen or closing the window. The shared `navigator` is available
 only while the controller is presented, so a hidden screen cannot change another
 screen's navigation controls. Asynchronous screen work must still cooperate with
 cancellation before publishing its own results.
+
+Use `.showsHeading(false)` for a screen with its own centered welcome title or
+form header. Its body then fills the space between the 28-point top inset and
+the shared footer, with 24-point horizontal insets. The navigation pill still
+uses the step's title. Shared headings remain enabled by default for existing
+controllers and checks.
 
 ## Validation
 
