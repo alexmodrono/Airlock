@@ -30,6 +30,7 @@ struct AirlockGlassWindowTests {
         #expect(window.canBecomeMain)
         #expect(window.level == .normal)
         #expect(!window.isOpaque)
+        #expect(window.frame.size == NSSize(width: 540, height: 520))
     }
 
     @Test func attachedNavigationTracksAResizeWithoutDuplicatingWindows() throws {

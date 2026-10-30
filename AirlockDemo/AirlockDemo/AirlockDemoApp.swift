@@ -24,9 +24,9 @@ final class DemoApplicationDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(app)
         NSApp.mainMenu = menu
         let navigator = AirlockNavigator(appName: "Airlock") {
-            AirlockStep(id: "welcome", title: "Welcome") { DemoWelcomeController() }
-            AirlockStep(id: "preferences", title: "Preferences") { DemoPreferencesController() }
-            AirlockStep(id: "ready", title: "Ready") { DemoReadyController() }
+            AirlockStep(id: "welcome", title: "Welcome") { DemoWelcomeController() }.showsHeading(false)
+            AirlockStep(id: "preferences", title: "Preferences") { DemoPreferencesController() }.showsHeading(false)
+            AirlockStep(id: "ready", title: "Ready") { DemoReadyController() }.showsHeading(false)
         }
         let controller = AirlockWindowController(navigator: navigator)
         navigator.onComplete = { [weak self] in self?.onboarding?.close() }

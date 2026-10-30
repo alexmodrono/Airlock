@@ -7,6 +7,7 @@ public struct AirlockStep: Identifiable {
     public let title: String
     public let makeViewController: @MainActor () -> NSViewController
     public var allowsGoingBack = true
+    public var showsHeading = true
     public var validation: (@MainActor () async -> Bool)?
 
     public init(id: String, title: String, content: @escaping @MainActor () -> NSViewController) {
@@ -18,6 +19,13 @@ public struct AirlockStep: Identifiable {
     public func allowsGoingBack(_ allowed: Bool) -> Self {
         var copy = self
         copy.allowsGoingBack = allowed
+        return copy
+    }
+
+    /// Hide the shared heading when the screen supplies its own title or hero.
+    public func showsHeading(_ shown: Bool) -> Self {
+        var copy = self
+        copy.showsHeading = shown
         return copy
     }
 

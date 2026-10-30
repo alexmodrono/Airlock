@@ -25,12 +25,12 @@ final class AirlockNavigationController: NSViewController {
         view = surface
         tabs.segmentCount = navigator.steps.count
         tabs.trackingMode = .selectOne
-        tabs.segmentStyle = .rounded
+        // The system style is the native segmented picker: a capsule track with
+        // a sliding selection that adapts to Liquid Glass, appearance and contrast.
+        tabs.segmentStyle = .automatic
         tabs.segmentDistribution = .fillEqually
         tabs.controlSize = .large
-        let font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        tabs.font = font
-        tabs.selectedSegmentBezelColor = .controlAccentColor
+        let font = tabs.font ?? .systemFont(ofSize: NSFont.systemFontSize(for: .large))
         tabs.target = self
         tabs.action = #selector(selectStep)
         tabs.setAccessibilityLabel("Setup steps")
@@ -47,16 +47,19 @@ final class AirlockNavigationController: NSViewController {
         scroll.drawsBackground = false
         scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
+        // Overlay scrollers never take height from the picker, so it stays centred
+        // even when "Show scroll bars" is set to Always.
+        scroll.scrollerStyle = .overlay
         scroll.documentView = tabs
         tabs.sizeToFit()
-        tabs.setFrameOrigin(NSPoint(x: 0, y: 2))
+        tabs.setFrameOrigin(.zero)
         surface.content.addSubview(scroll)
         scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: surface.content.leadingAnchor, constant: 10),
             scroll.trailingAnchor.constraint(equalTo: surface.content.trailingAnchor, constant: -10),
             scroll.centerYAnchor.constraint(equalTo: surface.content.centerYAnchor),
-            scroll.heightAnchor.constraint(equalToConstant: tabs.frame.height + 4)
+            scroll.heightAnchor.constraint(equalToConstant: tabs.frame.height)
         ])
         subscription = navigator.objectWillChange.sink { [weak self] in
             Task { @MainActor [weak self] in self?.refresh() }
