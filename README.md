@@ -20,7 +20,8 @@ making the content translucent. It rotates during the intro and fades out when
 the intro finishes or is skipped. Reduce Motion keeps it static and removes it
 immediately at completion. Its separate background window ignores mouse events,
 so transparent margins do not block other apps. The startup sound plays once,
-continuing to its end after the visual intro. Closing setup stops the sound.
+continuing to its end after natural visual completion. Skipping the intro fades
+the sound out over 300 ms while advancing immediately. Closing setup stops the sound.
 
 A separate glass pill above the content contains native segmented step controls.
 It moves with the main window, stays on screen when resized, and closes with it.
