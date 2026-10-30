@@ -120,7 +120,11 @@ public final class HelloAnimationView: NSView {
         }
     }
 
-    @objc private func skipIntro() { finish() }
+    @objc private func skipIntro() {
+        guard !hasFinished else { return }
+        startupSound.fadeOut()
+        finish()
+    }
 
     private func finish() {
         guard !hasFinished else { return }

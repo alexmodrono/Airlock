@@ -7,7 +7,7 @@ import Testing
 struct AirlockIntroSoundTests {
     @Test func soundDoesNotLoopOrReplayAfterFinishing() {
         let sound = IntroTestSound()
-        let playback = AirlockStartupSound { sound }
+        let playback = AirlockStartupSound(makeSound: { sound })
         playback.playOnce()
         #expect(sound.playCount == 1)
         #expect(!sound.loops)
@@ -19,20 +19,24 @@ struct AirlockIntroSoundTests {
 
     @Test func cancellingBeforeStartPreventsLatePlayback() {
         let sound = IntroTestSound()
-        let playback = AirlockStartupSound { sound }
+        let playback = AirlockStartupSound(makeSound: { sound })
         playback.stop()
         playback.playOnce()
         #expect(sound.playCount == 0)
     }
 
-    @Test func skippingTheVisualIntroKeepsSoundAliveUntilTheFlowCloses() throws {
+    @Test func skippingTheIntroFadesSoundWhileAdvancingImmediately() async throws {
         _ = NSApplication.shared
         let sound = IntroTestSound()
+        let clock = IntroFadeClock()
+        defer { clock.resume() }
+        let playback = AirlockStartupSound(waitForFadeStep: { await clock.wait() }, makeSound: { sound })
         let navigator = AirlockNavigator(appName: "Intro Test", steps: [
             AirlockStep(id: "ready", title: "Ready") { NSViewController() }
         ])
         let flow = AirlockFlowController(navigator: navigator, playsIntro: true, playsSound: true,
-                                        startupSound: AirlockStartupSound { sound })
+                                        startupSound: playback)
+        defer { flow.cancelPendingWork() }
         _ = flow.view
         flow.viewDidAppear()
         #expect(sound.isPlaying)
@@ -44,7 +48,17 @@ struct AirlockIntroSoundTests {
         flow.viewDidAppear()
         flow.resume()
         #expect(sound.playCount == 1)
-        flow.cancelPendingWork()
+        for step in 1...15 {
+            try await waitUntil { clock.pending != nil }
+            // Duplicate fade requests cannot restart or extend the fade.
+            playback.fadeOut()
+            clock.resume()
+            try await waitUntil { sound.volumes.count == step }
+            #expect(sound.volume == Float(15 - step) / 15)
+            if step < 15 { #expect(sound.isPlaying) }
+        }
+        #expect(sound.volumes.first! > 0)
+        #expect(sound.volumes.last == 0)
         #expect(!sound.isPlaying)
         #expect(sound.stopCount == 1)
         flow.resume()
@@ -54,7 +68,7 @@ struct AirlockIntroSoundTests {
     @Test func closingDuringTheIntroStopsSoundWithoutCompletingTheVisualAgain() {
         let sound = IntroTestSound()
         var completions = 0
-        let intro = HelloAnimationView(playsSound: true, startupSound: AirlockStartupSound { sound }) {
+        let intro = HelloAnimationView(playsSound: true, startupSound: AirlockStartupSound(makeSound: { sound })) {
             completions += 1
         }
         intro.start()
@@ -64,6 +78,45 @@ struct AirlockIntroSoundTests {
         #expect(sound.stopCount == 1)
         #expect(!sound.isPlaying)
         #expect(completions == 0)
+    }
+
+    @Test func closingDuringFadeStopsOnceAndCancelsVolumeUpdates() async throws {
+        let sound = IntroTestSound()
+        let clock = IntroFadeClock()
+        let playback = AirlockStartupSound(waitForFadeStep: { await clock.wait() }, makeSound: { sound })
+        defer { playback.stop(); clock.resume() }
+        playback.playOnce()
+        playback.fadeOut()
+        try await waitUntil { clock.pending != nil }
+        playback.stop()
+        clock.resume()
+        try await waitUntil { clock.resumedCount == 1 }
+        playback.playOnce()
+        #expect(sound.stopCount == 1)
+        #expect(sound.playCount == 1)
+        #expect(sound.volumes.isEmpty)
+        #expect(!sound.isPlaying)
+    }
+
+    @Test func fadeFinishesAfterItsOwnerReleasesPlayback() async throws {
+        let sound = IntroTestSound()
+        sound.volume = 0.5
+        var playback: AirlockStartupSound? = AirlockStartupSound(
+            waitForFadeStep: { await Task.yield() }, makeSound: { sound })
+        weak var retainedPlayback = playback
+        playback?.playOnce()
+        playback?.fadeOut()
+        playback = nil
+        try await waitUntil { sound.stopCount == 1 && retainedPlayback == nil }
+        #expect(sound.volumes[1] > 0 && sound.volumes[1] < 0.5)
+        #expect(sound.volume == 0)
+        #expect(!sound.isPlaying)
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !condition(), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(condition())
     }
 
     private func skipIntro(in view: NSView) throws {
@@ -84,6 +137,8 @@ struct AirlockIntroSoundTests {
 @MainActor
 private final class IntroTestSound: AirlockSoundPlaying {
     var loops = true
+    var volume: Float = 1 { didSet { volumes.append(volume) } }
+    private(set) var volumes: [Float] = []
     private(set) var playCount = 0
     private(set) var stopCount = 0
     private(set) var isPlaying = false
@@ -101,4 +156,21 @@ private final class IntroTestSound: AirlockSoundPlaying {
     }
 
     func finishPlayback() { isPlaying = false }
+}
+
+@MainActor
+private final class IntroFadeClock {
+    var pending: CheckedContinuation<Void, Never>?
+    private(set) var resumedCount = 0
+
+    func wait() async {
+        await withCheckedContinuation { pending = $0 }
+        resumedCount += 1
+    }
+
+    func resume() {
+        let continuation = pending
+        pending = nil
+        continuation?.resume()
+    }
 }
