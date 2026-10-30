@@ -3,7 +3,8 @@
 //
 // A configurable setup check with progress indication.
 
-import SwiftUI
+import AppKit
+import Combine
 import AirlockCore
 import AirlockUI
 
@@ -22,6 +23,7 @@ import AirlockUI
 ///     ]
 /// )
 /// ```
+@MainActor
 public final class SetupCheck: FlightCheck, ObservableObject {
     public let id = UUID()
     public let title: String
@@ -36,6 +38,8 @@ public final class SetupCheck: FlightCheck, ObservableObject {
     private let tasks: [SetupTask]
     private let stages: [String]
     private var hasStarted = false
+    private(set) var setupTask: Task<Void, Never>?
+    private var generation = UUID()
 
     /// A task to execute during setup.
     public struct SetupTask {
@@ -95,7 +99,7 @@ public final class SetupCheck: FlightCheck, ObservableObject {
     ) {
         let tasks = taskNames.map { name in
             SetupTask(name: name) {
-                try? await Task.sleep(nanoseconds: UInt64(taskDuration * 1_000_000_000))
+                try await Task.sleep(for: .seconds(max(0, taskDuration)))
             }
         }
         self.init(
@@ -107,8 +111,8 @@ public final class SetupCheck: FlightCheck, ObservableObject {
         )
     }
 
-    public var detailView: AnyView {
-        AnyView(SetupCheckDetailView(check: self))
+    public var detailView: NSViewController {
+        NativeCheckViewController(check: self)
     }
 
     /// Starts the setup work. Idempotent — safe to call more than once.
@@ -120,14 +124,15 @@ public final class SetupCheck: FlightCheck, ObservableObject {
     public func start() {
         guard !hasStarted else { return }
         hasStarted = true
-
-        Task { @MainActor in
-            await runSetup()
-        }
+        generation = UUID()
+        let attempt = generation
+        progress = 0
+        status = .checking
+        setupTask = Task { [weak self] in await self?.runSetup(generation: attempt) }
     }
 
     public func performAction() {
-        Task { @MainActor in start() }
+        start()
     }
 
     @MainActor
@@ -135,85 +140,38 @@ public final class SetupCheck: FlightCheck, ObservableObject {
         return progress >= 1.0
     }
 
+    public func cancel() {
+        generation = UUID()
+        setupTask?.cancel()
+        setupTask = nil
+        if status != .success { hasStarted = false }
+    }
+
     @MainActor
-    private func runSetup() async {
-        guard !tasks.isEmpty else {
-            progress = 1.0
-            currentTaskName = "Complete!"
-            status = .success
-            return
-        }
-
+    private func runSetup(generation attempt: UUID) async {
         for (index, task) in tasks.enumerated() {
+            guard !Task.isCancelled, generation == attempt else { return }
             currentTaskName = task.name
-
-            // Run the task
             do {
                 try await task.action()
-            } catch {
-                // Continue even if a task fails
+                try Task.checkCancellation()
+                guard generation == attempt else { return }
+            } catch is CancellationError { return }
+            catch {
+                guard !Task.isCancelled, generation == attempt else { return }
+                currentTaskName = error.localizedDescription
+                status = .failed(CheckError(message: error.localizedDescription))
+                hasStarted = false
+                return
             }
-
-            // Update progress with smooth animation
-            let targetProgress = Double(index + 1) / Double(tasks.count)
-            let steps = 10
-            for step in 1...steps {
-                progress = Double(index) / Double(tasks.count) + (targetProgress - Double(index) / Double(tasks.count)) * Double(step) / Double(steps)
-                try? await Task.sleep(nanoseconds: 20_000_000)
-            }
-            progress = targetProgress
+            progress = Double(index + 1) / Double(tasks.count)
         }
-
-        currentTaskName = "Complete!"
+        guard !Task.isCancelled, generation == attempt else { return }
+        progress = 1
+        currentTaskName = "Complete"
         status = .success
     }
 
     // Internal accessors for the detail view
     var setupStages: [String] { stages }
-}
-
-// MARK: - Detail View
-
-struct SetupCheckDetailView: View {
-    @ObservedObject var check: SetupCheck
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        CheckDetailView(
-            icon: check.icon,
-            title: check.title,
-            description: check.description,
-            status: check.status
-        ) {
-            VStack(spacing: 20) {
-                // Progress bar
-                ProgressBarView(
-                    progress: check.progress,
-                    label: check.currentTaskName
-                )
-                .padding(16)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.03))
-                )
-
-                // Setup stages
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(check.setupStages.enumerated()), id: \.offset) { index, stage in
-                        let stageProgress = Double(index + 1) / Double(check.setupStages.count)
-                        SetupStage(
-                            name: stage,
-                            isComplete: check.progress >= stageProgress
-                        )
-                    }
-                }
-            }
-            .padding(.horizontal, 32)
-            .padding(.top, 16)
-        }
-        .onAppear {
-            check.start()
-        }
-    }
 }

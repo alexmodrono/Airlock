@@ -1,45 +1,41 @@
 # Releasing Airlock
 
-This repository is structured to be pushed directly as a standalone GitHub repository.
+The AppKit API replaces the earlier SwiftUI presentation API. Publish this change
+with an appropriate major-version release note; see the README migration section.
+An application may also pin a reviewed commit while preparing its own release.
 
-## First Push
+## Qualify the revision
 
-If the GitHub repository does not exist yet, create `alexmodrono/Airlock` on GitHub first, then:
+Run from a clean checkout with the committed package lockfile:
 
-```bash
-git remote add origin git@github.com:alexmodrono/Airlock.git
-git push -u origin main
+```sh
+swift test --configuration debug --force-resolved-versions
+swift test --configuration release --force-resolved-versions
+xcodebuild -project AirlockDemo/AirlockDemo.xcodeproj -scheme AirlockDemo \
+  -configuration Debug -destination 'platform=macOS' \
+  -derivedDataPath /tmp/AirlockDemoQualification \
+  -disableAutomaticPackageResolution -onlyUsePackageVersionsFromResolvedFile \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 ```
 
-If you prefer HTTPS:
+GitHub Actions runs the same package configurations and unsigned demo using
+Xcode 26.6. Record the commit, toolchain version, test results, and any unresolved
+runtime warnings. A local pass on another Xcode version does not establish the
+CI toolchain result.
 
-```bash
-git remote add origin https://github.com/alexmodrono/Airlock.git
-git push -u origin main
-```
+Check the native window and step controls in a consuming app: typing, validation,
+back-navigation checkpoints, closing during work, reopening, and small/offset
+displays. Keep the main window solid and compact; glass belongs to the navigation
+pill. Verify the intro glow ends, startup sound plays once, and accessibility
+settings are respected.
 
-## Continuous Integration
+When updating Lottie, keep the root `Package.resolved` and the demo workspace's
+lockfile at the same reviewed revision. Consuming applications retain their own
+lockfiles.
 
-GitHub Actions runs the package checks defined in `.github/workflows/ci.yml`:
+## Publish
 
-- `swift build`
-- `swift test`
-- `xcodebuild` for the demo app
-
-## Cutting a Release
-
-1. Make sure `main` is green in GitHub Actions.
-2. Confirm the README examples still match the public API.
-3. Create a semantic version tag:
-
-```bash
-git tag 1.0.0
-git push origin 1.0.0
-```
-
-4. Create a GitHub Release from that tag.
-
-## Notes
-
-- Swift Package Manager expects semantic version tags.
-- If you publish under a different GitHub owner, update the README package URL before release.
+Push the reviewed commit and wait for CI before creating a version tag or release.
+Use a semantic version for tags and describe the removed SwiftUI APIs. Consumers
+should pin the accepted version or immutable revision, rather than an unreviewed
+working checkout.

@@ -4,7 +4,7 @@
 // Reusable permission UI components with native system icons
 // and easy navigation to System Settings.
 
-import SwiftUI
+import Combine
 import AppKit
 import ApplicationServices
 import AVFoundation
@@ -18,7 +18,7 @@ import CoreLocation
 /// Creating a `CLLocationManager` per read (as the old code did inside computed
 /// properties hit during rendering) is wasteful; one shared instance is enough
 /// to query `authorizationStatus`.
-private let airlockLocationManager = CLLocationManager()
+@MainActor private let airlockLocationManager = CLLocationManager()
 
 // MARK: - Permission Grant State
 
@@ -59,6 +59,7 @@ public enum PermissionRequestAvailability: Equatable {
 // MARK: - Permission Type
 
 /// Represents different macOS permission types with their settings URLs and check methods.
+@MainActor
 public enum PermissionType: String, CaseIterable, Identifiable {
     case accessibility
     case fullDiskAccess
@@ -73,7 +74,7 @@ public enum PermissionType: String, CaseIterable, Identifiable {
     case files
     case locationServices
 
-    public var id: String { rawValue }
+    public nonisolated var id: String { rawValue }
 
     /// Display name for the permission.
     public var displayName: String {
@@ -142,18 +143,18 @@ public enum PermissionType: String, CaseIterable, Identifiable {
     }
 
     /// The accent color associated with this permission type.
-    public var accentColor: Color {
+    public var accentColor: NSColor {
         switch self {
         case .accessibility: return .blue
         case .fullDiskAccess: return .gray
         case .automation: return .purple
         case .screenRecording: return .orange
         case .camera: return .green
-        case .microphone: return .pink
+        case .microphone: return .systemPink
         case .contacts: return .brown
         case .calendars: return .red
         case .reminders: return .orange
-        case .photos: return Color(red: 0.98, green: 0.36, blue: 0.45)
+        case .photos: return NSColor(red: 0.98, green: 0.36, blue: 0.45, alpha: 1)
         case .files: return .blue
         case .locationServices: return .blue
         }
@@ -287,7 +288,7 @@ public enum PermissionType: String, CaseIterable, Identifiable {
     public func requestAccess() async -> PermissionGrantState {
         switch self {
         case .accessibility:
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(options)
             return authorizationState
 
@@ -561,6 +562,7 @@ public enum PermissionType: String, CaseIterable, Identifiable {
 
 // MARK: - Permission Detection Helpers
 
+@MainActor
 private enum PermissionDetector {
     private static let fullDiskAccessProbePaths: [String] = [
         "Library/Mail",
@@ -643,277 +645,6 @@ private enum PermissionDetector {
     }
 }
 
-// MARK: - Permission Row View
-
-/// A row displaying a permission with its status and action button.
-public struct PermissionRowView: View {
-    let permission: PermissionType
-    let customDescription: String?
-    let state: PermissionGrantState
-    let onRequestPermission: (() -> Void)?
-
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var isHovering = false
-    @State private var isRequesting = false
-    @State private var displayedState: PermissionGrantState
-
-    /// Creates a permission row for the specified permission type.
-    /// - Parameters:
-    ///   - permission: The permission type to display
-    ///   - description: Optional custom description (uses default if nil)
-    ///   - state: Override state (uses the permission's detected state if nil)
-    ///   - isGranted: Backward-compatible boolean override
-    ///   - onRequestPermission: Custom action when the button is tapped (opens Settings if nil)
-    public init(
-        permission: PermissionType,
-        description: String? = nil,
-        state: PermissionGrantState? = nil,
-        isGranted: Bool? = nil,
-        onRequestPermission: (() -> Void)? = nil
-    ) {
-        self.permission = permission
-        self.customDescription = description
-        let resolvedState: PermissionGrantState
-        if let state {
-            resolvedState = state
-        } else if let isGranted {
-            resolvedState = isGranted ? .granted : .notGranted
-        } else {
-            resolvedState = permission.authorizationState
-        }
-        self.state = resolvedState
-        self.onRequestPermission = onRequestPermission
-        self._displayedState = State(initialValue: resolvedState)
-    }
-
-    public var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                permission.accentColor.opacity(colorScheme == .dark ? 0.35 : 0.2),
-                                permission.accentColor.opacity(colorScheme == .dark ? 0.2 : 0.1)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 36, height: 36)
-
-                Image(systemName: permission.systemImage)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(permission.accentColor)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(permission.displayName)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.primary)
-
-                Text(customDescription ?? permission.defaultDescription)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let statusMessage {
-                    Text(statusMessage)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(statusColor)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Spacer()
-
-            if displayedState.isGranted {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(.green)
-            } else {
-                Button {
-                    Task { await requestPermission() }
-                } label: {
-                    Group {
-                        if isRequesting {
-                            ProgressView()
-                                .controlSize(.small)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                        } else {
-                            Text(actionLabel)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                        }
-                    }
-                    .background(
-                        Capsule()
-                            .fill(permission.accentColor.opacity(isHovering ? 1.0 : 0.9))
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(isRequesting)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.03))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(
-                    isHovering && !displayedState.isGranted ? permission.accentColor.opacity(0.3) : Color.clear,
-                    lineWidth: 1
-                )
-        )
-        .scaleEffect(isHovering && !displayedState.isGranted ? 1.01 : 1.0)
-        .animation(.easeInOut(duration: 0.15), value: isHovering)
-        .onHover { hovering in
-            isHovering = hovering
-        }
-        .onChange(of: state) { _, newState in
-            displayedState = newState
-        }
-    }
-
-    private var actionLabel: String {
-        switch displayedState {
-        case .granted:
-            return "Granted"
-        case .requiresManualVerification:
-            return permission.requestButtonLabel
-        case .notGranted:
-            return permission.requestButtonLabel
-        }
-    }
-
-    private var statusMessage: String? {
-        switch displayedState {
-        case .granted:
-            return nil
-        case .notGranted:
-            return nil
-        case .requiresManualVerification(let message):
-            return message
-        }
-    }
-
-    private var statusColor: Color {
-        switch displayedState {
-        case .granted:
-            return .green
-        case .notGranted:
-            return .secondary
-        case .requiresManualVerification:
-            return .orange
-        }
-    }
-
-    @MainActor
-    private func requestPermission() async {
-        isRequesting = true
-        defer { isRequesting = false }
-
-        if let action = onRequestPermission {
-            action()
-            return
-        }
-
-        displayedState = await permission.requestAccess()
-    }
-}
-
-// MARK: - Permissions Group View
-
-/// A group of permissions displayed together with a header.
-public struct PermissionsGroupView: View {
-    let title: String
-    let permissions: [PermissionType]
-    let permissionStates: [PermissionType: PermissionGrantState]
-    let onRequestPermission: ((PermissionType) -> Void)?
-
-    public init(
-        title: String = "Required Permissions",
-        permissions: [PermissionType],
-        permissionStates: [PermissionType: PermissionGrantState]? = nil,
-        grantedPermissions: Set<PermissionType>? = nil,
-        onRequestPermission: ((PermissionType) -> Void)? = nil
-    ) {
-        self.title = title
-        self.permissions = permissions
-        if let permissionStates {
-            self.permissionStates = permissionStates
-        } else if let grantedPermissions {
-            self.permissionStates = Dictionary(
-                uniqueKeysWithValues: permissions.map { permission in
-                    (permission, grantedPermissions.contains(permission) ? .granted : .notGranted)
-                }
-            )
-        } else {
-            self.permissionStates = Dictionary(
-                uniqueKeysWithValues: permissions.map { ($0, $0.authorizationState) }
-            )
-        }
-        self.onRequestPermission = onRequestPermission
-    }
-
-    public var allGranted: Bool {
-        permissions.allSatisfy { state(for: $0).isGranted }
-    }
-
-    public var grantedCount: Int {
-        permissions.filter { state(for: $0).isGranted }.count
-    }
-
-    public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-
-                Spacer()
-
-                Text("\(grantedCount)/\(permissions.count)")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(allGranted ? .green : .secondary)
-            }
-
-            VStack(spacing: 8) {
-                ForEach(permissions) { permission in
-                    PermissionRowView(
-                        permission: permission,
-                        state: state(for: permission),
-                        onRequestPermission: onRequestPermission != nil ? { onRequestPermission?(permission) } : nil
-                    )
-                }
-            }
-
-            if allGranted {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.shield.fill")
-                        .foregroundStyle(.green)
-                    Text("All permissions granted")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.green)
-                }
-                .padding(.top, 4)
-            }
-        }
-    }
-
-    private func state(for permission: PermissionType) -> PermissionGrantState {
-        permissionStates[permission] ?? permission.authorizationState
-    }
-}
-
 // MARK: - Permission Status Checker
 
 /// A utility class for checking and monitoring permission status.
@@ -940,7 +671,7 @@ public final class PermissionChecker: ObservableObject {
         checkAllPermissions()
     }
 
-    deinit {
+    isolated deinit {
         checkTimer?.invalidate()
     }
 
@@ -1015,6 +746,7 @@ public final class PermissionChecker: ObservableObject {
 
 // MARK: - Location Permission Requester
 
+@MainActor
 private final class LocationPermissionRequester: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private var continuation: CheckedContinuation<PermissionGrantState, Never>?
@@ -1045,11 +777,12 @@ private final class LocationPermissionRequester: NSObject, CLLocationManagerDele
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let authorization = manager.authorizationStatus
         Task { @MainActor in
             guard let continuation else { return }
 
             let state: PermissionGrantState
-            switch manager.authorizationStatus {
+            switch authorization {
             case .authorizedAlways, .authorizedWhenInUse, .authorized:
                 state = .granted
             case .notDetermined:
@@ -1065,33 +798,3 @@ private final class LocationPermissionRequester: NSObject, CLLocationManagerDele
         }
     }
 }
-
-// MARK: - Preview Helpers
-
-#if DEBUG
-struct PermissionComponents_Previews: PreviewProvider {
-    static var previews: some View {
-        VStack(spacing: 20) {
-            PermissionRowView(permission: .accessibility, state: .granted)
-            PermissionRowView(permission: .fullDiskAccess, state: .notGranted)
-            PermissionRowView(
-                permission: .automation,
-                state: .requiresManualVerification("Verify Automation access against the target app.")
-            )
-
-            Divider()
-
-            PermissionsGroupView(
-                permissions: [.accessibility, .fullDiskAccess, .automation],
-                permissionStates: [
-                    .accessibility: .granted,
-                    .fullDiskAccess: .notGranted,
-                    .automation: .requiresManualVerification("Verify Automation access against the target app.")
-                ]
-            )
-        }
-        .padding()
-        .frame(width: 440)
-    }
-}
-#endif

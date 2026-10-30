@@ -1,13 +1,14 @@
 // FlightCheck.swift
 // Airlock
 
-import SwiftUI
+import AppKit
 import Combine
 
 /// Protocol defining a single check in the onboarding "Flight Check" sequence.
 ///
 /// Each check represents a system requirement that must be satisfied before
 /// the user can proceed to the main application.
+@MainActor
 public protocol FlightCheck: Identifiable, ObservableObject {
     /// Unique identifier for this check
     var id: UUID { get }
@@ -25,8 +26,7 @@ public protocol FlightCheck: Identifiable, ObservableObject {
     var status: CheckStatus { get set }
 
     /// The view to display in the right column when this check is focused
-    @ViewBuilder
-    var detailView: AnyView { get }
+    var detailView: NSViewController { get }
 
     /// Label for the action button (e.g., "Grant Access", "Connect")
     var actionLabel: String { get }
@@ -53,8 +53,9 @@ public extension FlightCheck {
 /// The wrapper does not store its own copy of the status. Reads and writes
 /// pass straight through to the underlying check, so there is a single source
 /// of truth and the two can never drift. Any change to the underlying check is
-/// republished so SwiftUI views observing the wrapper stay up to date.
-public class AnyFlightCheck: ObservableObject, Identifiable {
+/// republished so native controllers observing the wrapper stay up to date.
+@MainActor
+public final class AnyFlightCheck: ObservableObject, Identifiable {
     public let id: UUID
     public let title: String
     public let description: String
@@ -69,7 +70,7 @@ public class AnyFlightCheck: ObservableObject, Identifiable {
 
     private let _getStatus: () -> CheckStatus
     private let _setStatus: (CheckStatus) -> Void
-    private let _detailView: () -> AnyView
+    private let _detailView: () -> NSViewController
     private let _performAction: () -> Void
     private let _validate: @MainActor () async -> Bool
     private var cancellable: AnyCancellable?
@@ -85,7 +86,7 @@ public class AnyFlightCheck: ObservableObject, Identifiable {
         self._setStatus = { check.status = $0 }
         self._detailView = { check.detailView }
         self._performAction = check.performAction
-        self._validate = check.validate
+        self._validate = { await check.validate() }
 
         // Forward the underlying check's change notifications so views observing
         // the wrapper re-render. objectWillChange fires before the value lands,
@@ -96,7 +97,7 @@ public class AnyFlightCheck: ObservableObject, Identifiable {
         }
     }
 
-    public var detailView: AnyView {
+    public var detailView: NSViewController {
         _detailView()
     }
 

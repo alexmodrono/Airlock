@@ -3,7 +3,8 @@
 //
 // A configurable feature showcase screen that auto-advances to the next check.
 
-import SwiftUI
+import AppKit
+import Combine
 import AirlockCore
 import AirlockUI
 
@@ -31,6 +32,7 @@ import AirlockUI
 ///     autoAdvanceAfter: 3.0  // Advances to next check after 3 seconds
 /// )
 /// ```
+@MainActor
 public final class WelcomeCheck: FlightCheck, ObservableObject {
     public let id = UUID()
     public let title: String
@@ -46,6 +48,7 @@ public final class WelcomeCheck: FlightCheck, ObservableObject {
     private let highlightFeatures: [HighlightFeature]
     private let autoAdvanceDuration: UInt64
     private var autoAdvanceStarted = false
+    private(set) var autoAdvanceTask: Task<Void, Never>?
 
     /// A feature to display in the welcome screen.
     public struct Feature: Identifiable {
@@ -53,8 +56,8 @@ public final class WelcomeCheck: FlightCheck, ObservableObject {
         public let icon: String
         public let title: String
         public let description: String
-        public let color: Color
-        public let preview: FeaturePreview?
+        public let color: NSColor
+        public let preview: String?
 
         /// Creates a feature.
         /// - Parameters:
@@ -67,8 +70,8 @@ public final class WelcomeCheck: FlightCheck, ObservableObject {
             icon: String,
             title: String,
             description: String,
-            color: Color = .blue,
-            preview: FeaturePreview? = nil
+            color: NSColor = .blue,
+            preview: String? = nil
         ) {
             self.icon = icon
             self.title = title
@@ -83,14 +86,14 @@ public final class WelcomeCheck: FlightCheck, ObservableObject {
         public let id = UUID()
         public let icon: String
         public let title: String
-        public let color: Color
+        public let color: NSColor
 
         /// Creates a highlight feature.
         /// - Parameters:
         ///   - icon: SF Symbol name for the feature icon
         ///   - title: Short feature title
         ///   - color: Accent color for the highlight
-        public init(icon: String, title: String, color: Color) {
+        public init(icon: String, title: String, color: NSColor) {
             self.icon = icon
             self.title = title
             self.color = color
@@ -136,11 +139,12 @@ public final class WelcomeCheck: FlightCheck, ObservableObject {
         self.description = description ?? "Get started with \(appName)"
         self.icon = icon
         self.actionLabel = actionLabel
-        self.autoAdvanceDuration = UInt64(max(0, autoAdvanceAfter) * 1_000_000_000)
+        let seconds = autoAdvanceAfter.isFinite ? min(max(0, autoAdvanceAfter), 86_400) : 0
+        self.autoAdvanceDuration = UInt64(seconds * 1_000_000_000)
     }
 
-    public var detailView: AnyView {
-        AnyView(WelcomeCheckDetailView(check: self))
+    public var detailView: NSViewController {
+        NativeCheckViewController(check: self)
     }
 
     public func performAction() {
@@ -156,14 +160,23 @@ public final class WelcomeCheck: FlightCheck, ObservableObject {
         guard autoAdvanceDuration > 0, !autoAdvanceStarted else { return }
         autoAdvanceStarted = true
 
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: autoAdvanceDuration)
-            guard !Task.isCancelled else { return }
-            if status != .success {
-                status = .success
-            }
+        let duration = autoAdvanceDuration
+        autoAdvanceTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: duration) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            if self.status != .success { self.status = .success }
+            self.autoAdvanceTask = nil
         }
     }
+
+    /// Stops the countdown while this screen is hidden. A later visit starts it again.
+    public func cancel() {
+        autoAdvanceTask?.cancel()
+        autoAdvanceTask = nil
+        if status != .success { autoAdvanceStarted = false }
+    }
+
+    deinit { autoAdvanceTask?.cancel() }
 
     @MainActor
     public func validate() async -> Bool {
@@ -178,83 +191,4 @@ public final class WelcomeCheck: FlightCheck, ObservableObject {
     var welcomeFeatures: [Feature] { features }
     var welcomeHighlightFeatures: [HighlightFeature] { highlightFeatures }
     var hasAutoAdvance: Bool { autoAdvanceDuration > 0 }
-}
-
-// MARK: - Detail View
-
-struct WelcomeCheckDetailView: View {
-    @ObservedObject var check: WelcomeCheck
-    @Environment(\.airlockNavigator) private var navigator
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-                .frame(height: 24)
-
-            // Animated feature highlight at top
-            if !check.welcomeHighlightFeatures.isEmpty {
-                AnimatedFeatureHighlight(
-                    features: check.welcomeHighlightFeatures.map {
-                        AnimatedFeatureHighlight.Feature(icon: $0.icon, title: $0.title, color: $0.color)
-                    }
-                )
-            }
-
-            // Title
-            VStack(spacing: 8) {
-                Text("Welcome to \(check.welcomeAppName)")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-
-                Text(check.welcomeSubtitle)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 20)
-            }
-
-            // Feature cards
-            if !check.welcomeFeatures.isEmpty {
-                VStack(spacing: 10) {
-                    ForEach(check.welcomeFeatures) { feature in
-                        FeatureCard(
-                            icon: feature.icon,
-                            title: feature.title,
-                            description: feature.description,
-                            accentColor: feature.color,
-                            preview: feature.preview
-                        )
-                    }
-                }
-                .padding(.horizontal, 24)
-            }
-
-            // Continue button. In the declarative flow a navigator is present,
-            // so this advances directly instead of leaving a second disabled
-            // Continue in the sidebar. In the FlightCheck flow there is no
-            // navigator, so it just marks the check complete and the manager
-            // advances focus.
-            if check.status != .success {
-                Button {
-                    check.performAction()
-                    navigator?.goToNext()
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(check.actionLabel)
-                        Image(systemName: "arrow.right")
-                    }
-                    .frame(minWidth: 140)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .padding(.top, 8)
-            }
-
-            Spacer()
-                .frame(height: 24)
-        }
-        .onAppear {
-            check.beginAutoAdvanceIfNeeded()
-        }
-    }
 }

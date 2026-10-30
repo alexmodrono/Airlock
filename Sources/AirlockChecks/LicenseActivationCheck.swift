@@ -1,14 +1,16 @@
 // LicenseActivationCheck.swift
 // AirlockChecks
 
-import SwiftUI
 import AppKit
+import Combine
 import IOKit
 import AirlockCore
+import AirlockUI
 
 /// A configurable license activation check.
+@MainActor
 public final class LicenseActivationCheck: FlightCheck, ObservableObject {
-    public struct ValidationResult: Equatable {
+    public struct ValidationResult: Equatable, Sendable {
         public let isValid: Bool
         public let failureMessage: String?
 
@@ -76,10 +78,11 @@ public final class LicenseActivationCheck: FlightCheck, ObservableObject {
     @Published public var licenseKey: String = ""
     @Published public var validationError: String?
 
-    fileprivate let configuration: Configuration
+    let configuration: Configuration
     private let storageKey: String?
     private let validator: Validator
     private let machineIDProvider: () -> String
+    private var validationGeneration = UUID()
 
     public init(
         storageKey: String? = nil,
@@ -102,8 +105,8 @@ public final class LicenseActivationCheck: FlightCheck, ObservableObject {
         }
     }
 
-    public var detailView: AnyView {
-        AnyView(LicenseActivationDetailView(check: self))
+    public var detailView: NSViewController {
+        NativeCheckViewController(check: self)
     }
 
     public func performAction() {
@@ -118,45 +121,46 @@ public final class LicenseActivationCheck: FlightCheck, ObservableObject {
         status == .success
     }
 
-    /// Runs the network validation against the current `licenseKey`.
-    @MainActor
-    private func runNetworkValidation() async -> Bool {
-        guard !licenseKey.isEmpty else { return false }
-
-        do {
-            let result = try await validator(licenseKey, machineIDProvider())
-            validationError = result.failureMessage
-
-            if result.isValid, let storageKey {
-                UserDefaults.standard.set(licenseKey, forKey: storageKey)
-            }
-
-            return result.isValid
-        } catch {
-            validationError = error.localizedDescription
-            return false
-        }
-    }
-
-    /// Submits the license key for validation.
+    /// Submit only on an explicit action. A late reply cannot validate or persist
+    /// a different key after cancellation or a newer submission.
     @MainActor
     public func submitLicenseKey(_ key: String) async {
         licenseKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submittedKey = licenseKey
+        validationGeneration = UUID()
+        let attempt = validationGeneration
+        validationError = nil
+        guard !submittedKey.isEmpty else { status = .active; return }
         status = .checking
-
-        let valid = await runNetworkValidation()
-        status = valid ? .success : .active
+        do {
+            try Task.checkCancellation()
+            let result = try await validator(submittedKey, machineIDProvider())
+            guard validationGeneration == attempt else { return }
+            try Task.checkCancellation()
+            guard licenseKey == submittedKey else { status = .active; return }
+            validationError = result.failureMessage
+            if result.isValid, let storageKey {
+                UserDefaults.standard.set(submittedKey, forKey: storageKey)
+            }
+            status = result.isValid ? .success : .active
+        } catch {
+            guard validationGeneration == attempt else { return }
+            if !Task.isCancelled, !(error is CancellationError) { validationError = error.localizedDescription }
+            status = .active
+        }
     }
 
-    /// Validates a previously stored key once (e.g. on launch), without
-    /// requiring the user to re-enter it. No-op if already validated or empty.
+    /// Invalidates a pending reply when its screen is left or the flow closes.
+    public func cancelPendingValidation() {
+        validationGeneration = UUID()
+        if status == .checking { status = .active }
+    }
+
+    /// Validates a previously stored key once without replaying it on polling ticks.
     @MainActor
     public func validateStoredKeyIfNeeded() async {
         guard status != .success, status != .checking, !licenseKey.isEmpty else { return }
-        status = .checking
-
-        let valid = await runNetworkValidation()
-        status = valid ? .success : .active
+        await submitLicenseKey(licenseKey)
     }
 
     /// Returns a validator that posts JSON to an HTTP endpoint.
@@ -204,101 +208,5 @@ public final class LicenseActivationCheck: FlightCheck, ObservableObject {
         }
 
         return UUID().uuidString
-    }
-}
-
-// MARK: - Detail View
-
-struct LicenseActivationDetailView: View {
-    @ObservedObject var check: LicenseActivationCheck
-    @State private var inputKey: String = ""
-    @State private var isValidating: Bool = false
-
-    var body: some View {
-        CheckDetailView(
-            icon: check.configuration.icon,
-            title: check.configuration.detailTitle,
-            description: check.configuration.detailDescription,
-            status: check.status
-        ) {
-            VStack(spacing: 20) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(check.configuration.fieldTitle)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                        .tracking(1)
-
-                    HStack(spacing: 12) {
-                        TextField(check.configuration.placeholder, text: $inputKey)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 14, design: .monospaced))
-                            .padding(12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.primary.opacity(0.05))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(borderColor, lineWidth: 1)
-                            )
-
-                        Button {
-                            Task {
-                                isValidating = true
-                                await check.submitLicenseKey(inputKey)
-                                isValidating = false
-                            }
-                        } label: {
-                            if isValidating {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Text(check.configuration.submitButtonTitle)
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(inputKey.isEmpty || isValidating)
-                    }
-
-                    if let error = check.validationError {
-                        HStack(spacing: 4) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                            Text(error)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                    }
-                }
-
-                if let prompt = check.configuration.purchasePrompt,
-                   let purchaseURL = check.configuration.purchaseURL {
-                    HStack {
-                        Text(prompt)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        Button(check.configuration.purchaseButtonTitle) {
-                            NSWorkspace.shared.open(purchaseURL)
-                        }
-                        .buttonStyle(.link)
-                        .font(.caption)
-                    }
-                }
-            }
-            .padding(.horizontal, 40)
-            .padding(.top, 16)
-        }
-        .onAppear {
-            inputKey = check.licenseKey
-            Task { await check.validateStoredKeyIfNeeded() }
-        }
-    }
-
-    private var borderColor: Color {
-        if check.validationError != nil {
-            return .red.opacity(0.5)
-        }
-        return Color.primary.opacity(0.1)
     }
 }

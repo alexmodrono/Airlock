@@ -1,8 +1,8 @@
 // AirlockManager.swift
 // Airlock
 
-import SwiftUI
 import Combine
+import Foundation
 
 /// Manages the state and lifecycle of the onboarding "Flight Check" sequence.
 ///
@@ -28,7 +28,8 @@ public final class AirlockManager: ObservableObject {
     /// The app icon name (from asset catalog)
     public let appIconName: String?
 
-    private var validationTask: Task<Void, Never>?
+    private(set) var validationTask: Task<Void, Never>?
+    private var validationGeneration = UUID()
     private var cancellables = Set<AnyCancellable>()
     private var isRunningValidationLoop = false
 
@@ -79,16 +80,19 @@ public final class AirlockManager: ObservableObject {
 
     /// Starts the validation loop for all checks.
     public func startValidation() {
-        validationTask?.cancel()
-        validationTask = Task {
-            await runValidationLoop()
+        stopValidation()
+        let generation = validationGeneration
+        validationTask = Task { [weak self] in
+            await self?.runValidationLoop(generation: generation)
         }
     }
 
     /// Stops the validation loop.
     public func stopValidation() {
+        validationGeneration = UUID()
         validationTask?.cancel()
         validationTask = nil
+        isRunningValidationLoop = false
     }
 
     /// Marks the airlock as complete and transitions to the main app.
@@ -111,13 +115,14 @@ public final class AirlockManager: ObservableObject {
 
     // MARK: - Private
 
-    private func runValidationLoop() async {
+    private func runValidationLoop(generation: UUID) async {
+        guard !Task.isCancelled, validationGeneration == generation else { return }
         isRunningValidationLoop = true
-        defer { isRunningValidationLoop = false }
+        defer { if validationGeneration == generation { isRunningValidationLoop = false } }
 
         // Initial pass: set all to checking then validate
         for (index, check) in checks.enumerated() {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, validationGeneration == generation else { return }
 
             // Focus on current check
             focusedIndex = index
@@ -126,30 +131,34 @@ public final class AirlockManager: ObservableObject {
             // Small delay for visual feedback
             try? await Task.sleep(nanoseconds: 300_000_000) // 300ms
 
+            guard !Task.isCancelled, validationGeneration == generation else { return }
             let passed = await check.validate()
+            guard !Task.isCancelled, validationGeneration == generation else { return }
             check.status = passed ? .success : .active
 
             // If passed, move to next; if not, stay focused
             if !passed {
                 // Wait for user action, then re-validate periodically
-                await waitForCheckToPass(check, at: index)
+                await waitForCheckToPass(check, generation: generation)
             } else {
                 // Pause to let user see the success state before moving to next check
                 try? await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 seconds
             }
         }
 
+        guard !Task.isCancelled, validationGeneration == generation else { return }
         updateCompletionStatus()
     }
 
-    private func waitForCheckToPass(_ check: AnyFlightCheck, at index: Int) async {
+    private func waitForCheckToPass(_ check: AnyFlightCheck, generation: UUID) async {
         while !Task.isCancelled && check.status != .success {
             try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
 
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, validationGeneration == generation else { return }
 
             // Re-validate
             let passed = await check.validate()
+            guard !Task.isCancelled, validationGeneration == generation else { return }
             if passed {
                 check.status = .success
             }

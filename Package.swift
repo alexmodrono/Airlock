@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
 
 import PackageDescription
 
@@ -8,6 +8,7 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
+        .executable(name: "AirlockDemo", targets: ["AirlockDemo"]),
         // Umbrella library - use this for most cases
         .library(
             name: "Airlock",
@@ -37,7 +38,7 @@ let package = Package(
             name: "AirlockCore",
             dependencies: []
         ),
-        // UI: SwiftUI views and components
+        // UI: Native AppKit window and view controllers
         .target(
             name: "AirlockUI",
             dependencies: [
@@ -57,6 +58,12 @@ let package = Package(
         .target(
             name: "Airlock",
             dependencies: ["AirlockCore", "AirlockUI", "AirlockChecks"]
+        ),
+        .executableTarget(
+            name: "AirlockDemo",
+            dependencies: ["Airlock"],
+            path: "AirlockDemo/AirlockDemo",
+            exclude: ["Assets.xcassets", "AirlockDemo.entitlements", "Info.plist"]
         ),
         .testTarget(
             name: "AirlockTests",

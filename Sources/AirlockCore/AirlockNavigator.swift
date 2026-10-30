@@ -1,378 +1,129 @@
-// AirlockNavigator.swift
-// AirlockCore
-//
-// State management for onboarding flows.
-
-import SwiftUI
 import Combine
+import Foundation
 
-/// Manages navigation state for an onboarding flow.
-///
-/// The navigator tracks the current step, handles navigation between steps,
-/// and manages the continue button state. It's automatically injected into
-/// the environment for all step content views.
-///
-/// Example:
-/// ```swift
-/// @StateObject private var navigator = AirlockNavigator(steps: mySteps)
-///
-/// AirlockFlowView(navigator: navigator)
-///     .onComplete { navigator.complete() }
-/// ```
+public enum AirlockStepStatus: Equatable, Sendable {
+    case pending, current, completed
+}
+
 @MainActor
 public final class AirlockNavigator: ObservableObject {
-    // MARK: - Published Properties
-
-    /// The steps in the onboarding flow.
-    @Published public private(set) var steps: [AnyAirlockStep]
-
-    /// The index of the currently displayed step.
-    @Published public private(set) var currentIndex: Int = 0
-
-    /// Whether the continue button is enabled for the current step.
-    @Published public private(set) var canContinue: Bool = false
-
-    /// Status of each step (pending, current, completed).
-    @Published public private(set) var stepStatuses: [String: AirlockStepStatus] = [:]
-
-    /// Whether the onboarding flow is complete.
-    @Published public private(set) var isComplete: Bool = false
-
-    /// Whether the onboarding is currently active.
-    @Published public var isActive: Bool = true
-
-    /// Whether a validation is currently running.
-    @Published public private(set) var isValidating: Bool = false
-
-    /// Whether the sidebar button is running a custom action.
-    @Published public private(set) var isRunningAction: Bool = false
-
-    /// Custom label for the sidebar button. When nil, uses the default.
-    @Published public private(set) var buttonLabel: String?
-
-    /// Custom icon for the sidebar button. When nil, uses the default.
-    @Published public private(set) var buttonIcon: String?
-
-    /// Custom action for the sidebar button. When set, the button runs this
-    /// instead of advancing. The step is responsible for calling
-    /// ``resetButton()`` when the action succeeds and the user should advance.
-    public private(set) var customButtonAction: (@MainActor () async -> Void)?
-
-    // MARK: - Configuration
-
-    /// The app name to display in the UI.
+    public let steps: [AirlockStep]
     public let appName: String
+    @Published public private(set) var currentIndex = 0
+    @Published public private(set) var canContinue = false
+    @Published public private(set) var isBusy = false
+    @Published public private(set) var isComplete = false
+    @Published public private(set) var buttonLabel: String?
+    public var onComplete: (@MainActor () -> Void)?
 
-    /// The app icon name (from asset catalog).
-    public let appIconName: String?
+    private var action: (@MainActor () async -> Void)?
+    private var operation: Task<Void, Never>?
+    private var generation = UUID()
 
-    /// Callback when the flow is completed.
-    public var onComplete: (() -> Void)?
-
-    // MARK: - Computed Properties
-
-    /// The current step.
-    public var currentStep: AnyAirlockStep? {
-        guard currentIndex >= 0, currentIndex < steps.count else { return nil }
-        return steps[currentIndex]
-    }
-
-    /// Whether the user can go back from the current step.
-    public var canGoBack: Bool {
-        guard currentIndex > 0 else { return false }
-        return currentStep?.allowsGoingBack ?? true
-    }
-
-    /// Whether this is the last step.
-    public var isLastStep: Bool {
-        currentIndex == steps.count - 1
-    }
-
-    /// Progress through the flow (0.0 to 1.0).
-    public var progress: Double {
-        guard steps.count > 1 else { return 1.0 }
-        return Double(currentIndex) / Double(steps.count - 1)
-    }
-
-    // MARK: - Initialization
-
-    /// Creates a navigator with the given steps.
-    /// - Parameters:
-    ///   - appName: The name of the app
-    ///   - appIconName: Optional asset catalog image name for the app icon
-    ///   - steps: The steps in the onboarding flow
-    public init(
-        appName: String,
-        appIconName: String? = nil,
-        steps: [AnyAirlockStep]
-    ) {
+    public init(appName: String, steps: [AirlockStep]) {
+        precondition(Set(steps.map(\.id)).count == steps.count, "Onboarding step IDs must be unique")
         self.appName = appName
-        self.appIconName = appIconName
         self.steps = steps
-
-        // Initialize statuses
-        for (index, step) in steps.enumerated() {
-            stepStatuses[step.id] = index == 0 ? .current : .pending
-        }
     }
 
-    /// Creates a navigator using the step builder.
-    /// - Parameters:
-    ///   - appName: The name of the app
-    ///   - appIconName: Optional asset catalog image name for the app icon
-    ///   - steps: Step builder closure
-    public convenience init(
-        appName: String,
-        appIconName: String? = nil,
-        @AirlockStepBuilder steps: () -> [AnyAirlockStep]
-    ) {
-        self.init(appName: appName, appIconName: appIconName, steps: steps())
+    public convenience init(appName: String, @AirlockStepBuilder steps: () -> [AirlockStep]) {
+        self.init(appName: appName, steps: steps())
     }
 
-    // MARK: - Navigation
+    deinit { operation?.cancel() }
 
-    /// Enables or disables the continue button.
-    ///
-    /// Called by step content views when their requirements are met.
-    public func setContinueEnabled(_ enabled: Bool) {
-        canContinue = enabled
-    }
+    public var currentStep: AirlockStep? { steps.indices.contains(currentIndex) ? steps[currentIndex] : nil }
+    public var isLastStep: Bool { !steps.isEmpty && currentIndex == steps.count - 1 }
+    public var canGoBack: Bool { canGoTo(index: currentIndex - 1) }
+    public var progress: Double { steps.count > 1 ? Double(currentIndex) / Double(steps.count - 1) : 1 }
 
-    // MARK: - Button Configuration
+    public func setContinueEnabled(_ enabled: Bool) { canContinue = enabled }
 
-    /// Configures the sidebar button with a custom action.
-    ///
-    /// While a custom action is set, tapping the sidebar button runs the action
-    /// instead of advancing. The step should call ``resetButton()`` when the
-    /// action succeeds and the flow should advance normally.
-    ///
-    /// - Parameters:
-    ///   - label: Button label (e.g., "Validate", "Sign In")
-    ///   - icon: SF Symbol name for the button icon
-    ///   - action: Async closure to run when the button is tapped
-    public func setButtonAction(
-        label: String,
-        icon: String,
-        action: @escaping @MainActor () async -> Void
-    ) {
+    public func setButtonAction(label: String, action: @escaping @MainActor () async -> Void) {
         buttonLabel = label
-        buttonIcon = icon
-        customButtonAction = action
+        self.action = action
     }
 
-    /// Changes the sidebar button's label and icon without setting a custom action.
-    /// The button still advances to the next step (or completes the flow) when tapped.
-    public func setButtonLabel(_ label: String, icon: String? = nil) {
+    public func setButtonLabel(_ label: String) {
         buttonLabel = label
-        buttonIcon = icon
-        customButtonAction = nil
+        action = nil
     }
 
-    /// Resets the sidebar button to its default appearance and behavior.
     public func resetButton() {
         buttonLabel = nil
-        buttonIcon = nil
-        customButtonAction = nil
+        action = nil
     }
 
-    /// Activates the sidebar button.
-    ///
-    /// If a custom action is set via ``setButtonAction(label:icon:action:)``,
-    /// runs it. Otherwise advances to the next step. If validation is configured
-    /// for the current step, it will run first.
     public func goToNext() {
-        guard !isValidating, !isRunningAction else { return }
-
-        // Custom action path — run the step's action instead of advancing.
-        if let action = customButtonAction {
-            // Set the busy flag synchronously so a second synchronous call to
-            // goToNext() is rejected by the guard above before the Task runs.
-            isRunningAction = true
-            Task {
+        guard canContinue, !isBusy, !isComplete, let step = currentStep else { return }
+        let currentGeneration = generation
+        if let action {
+            isBusy = true
+            operation = Task { [weak self] in
                 await action()
-                isRunningAction = false
+                guard let self, !Task.isCancelled, self.generation == currentGeneration else { return }
+                self.isBusy = false
+                self.operation = nil
             }
-            return
-        }
-
-        // Default path — advance to the next step.
-        guard let step = currentStep, step.hasValidation else {
-            advanceToNextStep()
-            return
-        }
-
-        // Set the busy flag synchronously to prevent double validation.
-        isValidating = true
-        Task {
-            let passed = await step.validate()
-            isValidating = false
-            guard passed else { return }
-            advanceToNextStep()
+        } else if let validate = step.validation {
+            isBusy = true
+            operation = Task { [weak self] in
+                let passed = await validate()
+                guard let self, !Task.isCancelled, self.generation == currentGeneration else { return }
+                self.isBusy = false
+                self.operation = nil
+                if passed { self.advance() }
+            }
+        } else {
+            advance()
         }
     }
 
-    /// Internal: moves to the next step or completes the flow.
-    private func advanceToNextStep() {
-        // Mark current step as completed
-        if let step = currentStep {
-            stepStatuses[step.id] = .completed
-        }
+    public func goToPrevious() { goTo(index: currentIndex - 1) }
 
-        // Check if we're at the end
+    /// Whether a navigation control may select this step without bypassing
+    /// validation or crossing a completed setup checkpoint.
+    public func canGoTo(index: Int) -> Bool {
+        guard !isBusy, !isComplete, steps.indices.contains(index), index <= currentIndex else { return false }
+        if index == currentIndex { return true }
+        return steps[(index + 1)...currentIndex].allSatisfy(\.allowsGoingBack)
+    }
+
+    public func goTo(index: Int) {
+        guard index != currentIndex, canGoTo(index: index) else { return }
+        currentIndex = index
+        canContinue = false
+        resetButton()
+    }
+
+    public func status(at index: Int) -> AirlockStepStatus {
+        if index < currentIndex || isComplete { return .completed }
+        return index == currentIndex ? .current : .pending
+    }
+
+    public func cancelPendingAction() {
+        generation = UUID()
+        operation?.cancel()
+        operation = nil
+        isBusy = false
+    }
+
+    public func reset() {
+        cancelPendingAction()
+        currentIndex = 0
+        isComplete = false
+        canContinue = false
+        resetButton()
+    }
+
+    private func advance() {
         if isLastStep {
-            complete()
-            return
-        }
-
-        // Move to next step
-        let nextIndex = currentIndex + 1
-        if nextIndex < steps.count {
-            // Reset state for new step
+            isComplete = true
+            onComplete?()
+        } else {
             canContinue = false
             resetButton()
-
-            // Update statuses
-            currentIndex = nextIndex
-            if let step = currentStep {
-                stepStatuses[step.id] = .current
-            }
+            currentIndex += 1
         }
-    }
-
-    /// Goes back to the previous step.
-    public func goToPrevious() {
-        guard canGoBack else { return }
-
-        // Update statuses
-        if let step = currentStep {
-            stepStatuses[step.id] = .pending
-        }
-
-        currentIndex -= 1
-        resetButton()
-
-        if let step = currentStep {
-            stepStatuses[step.id] = .current
-        }
-
-        // Re-enable continue for completed steps
-        canContinue = true
-    }
-
-    /// Jumps to a specific step by index.
-    ///
-    /// Only allows jumping to completed steps (going back).
-    public func goTo(index: Int) {
-        guard index >= 0, index < steps.count else { return }
-        guard index < currentIndex else { return } // Can only go back
-
-        // Update statuses for the steps we're stepping back over.
-        for i in (index + 1)...currentIndex {
-            stepStatuses[steps[i].id] = .pending
-        }
-
-        currentIndex = index
-        resetButton()
-
-        if let step = currentStep {
-            stepStatuses[step.id] = .current
-        }
-
-        // The step we jumped back to was previously completed, so it can advance.
-        canContinue = true
-    }
-
-    /// Marks the flow as complete.
-    public func complete() {
-        // Mark final step as completed
-        if let step = currentStep {
-            stepStatuses[step.id] = .completed
-        }
-
-        isComplete = true
-        isActive = false
-        onComplete?()
-    }
-
-    /// Resets the navigator to the first step.
-    public func reset() {
-        currentIndex = 0
-        canContinue = false
-        isComplete = false
-        isActive = true
-
-        // Reset all statuses
-        for (index, step) in steps.enumerated() {
-            stepStatuses[step.id] = index == 0 ? .current : .pending
-        }
-    }
-
-    // MARK: - Step Status
-
-    /// Returns the status of a step by its ID.
-    public func status(for stepId: String) -> AirlockStepStatus {
-        stepStatuses[stepId] ?? .pending
-    }
-
-    /// Returns the status of a step by its index.
-    public func status(at index: Int) -> AirlockStepStatus {
-        guard index >= 0, index < steps.count else { return .pending }
-        return stepStatuses[steps[index].id] ?? .pending
-    }
-}
-
-// MARK: - FlightCheck Adapter
-
-/// Extension to create a navigator from FlightCheck-based checks.
-public extension AirlockNavigator {
-    /// Creates a navigator from FlightCheck instances.
-    ///
-    /// This adapter allows using the existing FlightCheck-based checks
-    /// with the new declarative navigation system.
-    convenience init(
-        appName: String,
-        appIconName: String? = nil,
-        checks: [AnyFlightCheck]
-    ) {
-        let steps = checks.map { check in
-            AnyAirlockStep(FlightCheckStepAdapter(check: check))
-        }
-        self.init(appName: appName, appIconName: appIconName, steps: steps)
-    }
-}
-
-/// Internal adapter that wraps a FlightCheck as an AirlockStep.
-///
-/// Bridges the FlightCheck's `status` to the navigator's continue button: the
-/// step becomes continuable once the underlying check reports success, so
-/// checks designed for the FlightCheck flow also work in the declarative flow.
-private struct FlightCheckStepAdapter: View {
-    @ObservedObject var check: AnyFlightCheck
-    @Environment(\.airlockNavigator) private var navigator
-
-    var body: some View {
-        check.detailView
-            .onAppear {
-                navigator?.setContinueEnabled(check.status == .success)
-            }
-            .onChange(of: check.status) { _, status in
-                navigator?.setContinueEnabled(status == .success)
-            }
-    }
-}
-
-private extension AnyAirlockStep {
-    init(_ adapter: FlightCheckStepAdapter) {
-        self.init(
-            id: adapter.check.id.uuidString,
-            title: adapter.check.title,
-            icon: adapter.check.icon,
-            subtitle: adapter.check.description,
-            allowsGoingBack: true,
-            content: AnyView(adapter),
-            validation: {
-                await adapter.check.validate()
-            }
-        )
     }
 }

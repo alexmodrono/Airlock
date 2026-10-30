@@ -1,10 +1,13 @@
 // FullDiskAccessCheck.swift
 // AirlockChecks
 
-import SwiftUI
+import AppKit
+import Combine
 import AirlockCore
+import AirlockUI
 
 /// Verifies that Full Disk Access is granted.
+@MainActor
 public final class FullDiskAccessCheck: FlightCheck, ObservableObject {
     public struct FolderHighlight: Identifiable, Equatable {
         public let id = UUID()
@@ -20,9 +23,9 @@ public final class FullDiskAccessCheck: FlightCheck, ObservableObject {
     public struct Note: Equatable {
         public let icon: String
         public let message: String
-        public let tint: Color
+        public let tint: NSColor
 
-        public init(icon: String = "lock.shield", message: String, tint: Color = .green) {
+        public init(icon: String = "lock.shield", message: String, tint: NSColor = .green) {
             self.icon = icon
             self.message = message
             self.tint = tint
@@ -101,7 +104,7 @@ public final class FullDiskAccessCheck: FlightCheck, ObservableObject {
 
     @Published public var status: CheckStatus = .pending
 
-    fileprivate let configuration: Configuration
+    let configuration: Configuration
     fileprivate var currentAuthorizationState: PermissionGrantState = PermissionType.fullDiskAccess.authorizationState
 
     public convenience init() {
@@ -116,8 +119,8 @@ public final class FullDiskAccessCheck: FlightCheck, ObservableObject {
         self.actionLabel = configuration.actionLabel
     }
 
-    public var detailView: AnyView {
-        AnyView(FullDiskAccessDetailView(check: self))
+    public var detailView: NSViewController {
+        NativeCheckViewController(check: self)
     }
 
     public func performAction() {
@@ -134,104 +137,5 @@ public final class FullDiskAccessCheck: FlightCheck, ObservableObject {
     public func validate() async -> Bool {
         currentAuthorizationState = PermissionType.fullDiskAccess.authorizationState
         return currentAuthorizationState.isGranted
-    }
-}
-
-// MARK: - Detail View
-
-struct FullDiskAccessDetailView: View {
-    @ObservedObject var check: FullDiskAccessCheck
-
-    var body: some View {
-        CheckDetailView(
-            icon: check.configuration.icon,
-            title: check.configuration.detailTitle,
-            description: check.configuration.detailDescription,
-            status: check.status
-        ) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("How to Enable")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(1)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(check.configuration.instructions.enumerated()), id: \.offset) { index, instruction in
-                        InstructionStep(index + 1, instruction)
-                    }
-                }
-
-                if let foldersTitle = check.configuration.foldersTitle,
-                   !check.configuration.folderHighlights.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(foldersTitle)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
-
-                        HStack(spacing: 16) {
-                            ForEach(check.configuration.folderHighlights) { folder in
-                                FolderBadge(icon: folder.icon, name: folder.name)
-                            }
-                        }
-                    }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.primary.opacity(0.05))
-                    )
-                }
-
-                if let note = check.configuration.note {
-                    HStack(spacing: 8) {
-                        Image(systemName: note.icon)
-                            .foregroundStyle(note.tint)
-                        Text(note.message)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(note.tint.opacity(0.1))
-                    )
-                }
-
-                if case .requiresManualVerification(let message) = check.currentAuthorizationState,
-                   check.status != .success {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(message)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        Button("Continue After Review") {
-                            check.confirmManualReview()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.regular)
-                    }
-                }
-            }
-            .padding(.horizontal, 40)
-            .padding(.top, 16)
-        }
-    }
-}
-
-// MARK: - Folder Badge
-
-struct FolderBadge: View {
-    let icon: String
-    let name: String
-
-    var body: some View {
-        VStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.system(size: 20))
-                .foregroundStyle(.secondary)
-            Text(name)
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-        }
     }
 }
